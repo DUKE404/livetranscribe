@@ -8,7 +8,12 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Testy jednostkowe + wersja Release (APK i AAB)
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -53,6 +58,56 @@ jobs:
           name: LiveTranscribe
           path: out/
 
+  # Testy na emulatorze Androida: uruchomienie aplikacji, usługa nagrywania, PDF, pliki
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Włącz KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Testy na emulatorze (Android 14)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: chmod +x gradlew; ./gradlew --no-daemon connectedDebugAndroidTest; R=$?; mkdir -p results; adb pull /sdcard/Download/LiveTranscribeTest results/ekrany || true; adb pull /sdcard/Download/LiveTranscribe results/pdf || true; adb logcat -d -t 4000 > results/logcat.txt || true; exit $R
+
+      - name: Zapisz wyniki testów w gałęzi ci-results
+        if: always()
+        run: |
+          mkdir -p results
+          cp -r app/build/reports/androidTests results/raport 2>/dev/null || true
+          cd results
+          git init -q -b ci-results
+          git add -A
+          git -c user.name="ci" -c user.email="ci@users.noreply.github.com" commit -qm "Wyniki testów ${{ github.run_number }}" || exit 0
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ci-results
+
+  # Wydanie powstaje tylko wtedy, gdy przeszły i testy jednostkowe, i testy na emulatorze
+  release:
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: LiveTranscribe
+          path: out
+
       - name: Wydanie (Releases)
         uses: softprops/action-gh-release@v2
         with:
@@ -60,7 +115,7 @@ jobs:
           name: LiveTranscribe 1.0.${{ github.run_number }}
           body: |
             Pobierz plik **LiveTranscribe.apk** na telefon z Androidem i zainstaluj go.
-            Instrukcja: plik INSTRUKCJA.md w repozytorium.
+            Instrukcja krok po kroku: [INSTRUKCJA.md](https://github.com/${{ github.repository }}/blob/main/INSTRUKCJA.md)
           files: |
             out/LiveTranscribe.apk
             out/LiveTranscribe.aab
