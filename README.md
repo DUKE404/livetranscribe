@@ -1,0 +1,39 @@
+# LiveTranscribe
+
+Aplikacja na Androida (10+), która zamienia mowę na tekst na żywo – także przy wygaszonym ekranie – i tworzy z transkrypcji dokument PDF do pobrania lub wysłania.
+
+**Pobieranie:** gotowy plik `LiveTranscribe.apk` jest w zakładce [Releases](../../releases/latest).
+**Instrukcja dla użytkownika:** [INSTRUKCJA.md](INSTRUKCJA.md).
+
+## Jak to działa
+
+```
+mikrofon → RecordingService (usługa pierwszoplanowa)
+         → Chunker: cięcie dźwięku na fragmenty w pauzach mowy
+         → zapis fragmentu na dysk + wpis w bazie Room (status PENDING)
+         → TranscriptionQueue: silnik chmurowy (API zgodne z OpenAI) albo lokalny (Vosk)
+         → tekst w bazie → ekran na żywo → edycja → PDF → pobranie / udostępnienie
+```
+
+- **Architektura:** MVVM, Kotlin, Jetpack Compose, Room, Foreground Service.
+- **Odporność:** każdy fragment jest najpierw zapisany, potem przetwarzany. Brak internetu, błąd serwera
+  lub zamknięcie aplikacji nie kasują nagrania – fragmenty czekają w kolejce i kończą się później.
+- **Silniki:** chmura (Groq / OpenAI / dowolna usługa zgodna z `/v1/audio/transcriptions`) oraz
+  lokalny Vosk z polskim modelem. Oba implementują `TranscriptionEngine`.
+- **Klucz API** nie jest w kodzie – użytkownik wpisuje go w Ustawieniach, a aplikacja trzyma go
+  w `EncryptedSharedPreferences`.
+- **PDF:** `android.graphics.pdf.PdfDocument`, A4, paginacja, nagłówki, numery stron.
+- **Pliki:** MediaStore (`Download/LiveTranscribe`), FileProvider + systemowe menu udostępniania.
+
+## Budowanie
+
+Każdy push do gałęzi `main` uruchamia GitHub Actions (`.github/workflows/build.yml`): testy jednostkowe,
+`assembleRelease` i `bundleRelease`, a wynik (APK + AAB) trafia do Releases.
+
+Lokalnie: `./gradlew testDebugUnitTest assembleRelease` (JDK 17, Android SDK 35).
+
+### Podpisywanie
+
+Jeśli w repozytorium ustawione są sekrety `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`,
+wydanie jest podpisywane tym kluczem. Bez nich używany jest klucz debug z maszyny budującej – APK da się
+zainstalować, ale kolejne wersje nie zaktualizują poprzedniej (trzeba ją najpierw odinstalować).
