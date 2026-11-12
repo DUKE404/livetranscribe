@@ -28,6 +28,10 @@ data class AppSettings(
     /** "system", "light", "dark" */
     val theme: String = "system",
     val keepAudio: Boolean = false,
+    /** Nazwiska, nazwy firm i żargon – podpowiedź dla modelu przy każdym fragmencie. */
+    val glossary: String = "",
+    /** Czy pokazano już przypomnienie o uprzedzeniu uczestników nagrania. */
+    val consentShown: Boolean = false,
 ) {
     val baseUrl: String
         get() = when (provider) {
@@ -51,6 +55,13 @@ data class AppSettings(
                 "groq" -> if (quality == "fast") "whisper-large-v3-turbo" else "whisper-large-v3"
                 else -> "whisper-1"
             }
+        }
+
+    /** Model językowy do notatek AI (Groq zaleca gpt-oss-120b w miejsce wycofanego Llama 3.3 70B). */
+    val summaryModel: String
+        get() = when (provider) {
+            "openai" -> "gpt-5-mini"
+            else -> "openai/gpt-oss-120b"
         }
 
     /** Długość fragmentów: krótsze = tekst pojawia się szybciej, dłuższe = więcej kontekstu. */
@@ -116,6 +127,8 @@ class SettingsStore(private val context: Context) {
             .putBoolean("pdfHeader", n.pdfHeader)
             .putString("theme", n.theme)
             .putBoolean("keepAudio", n.keepAudio)
+            .putString("glossary", n.glossary)
+            .putBoolean("consentShown", n.consentShown)
             .apply()
         _flow.value = n
     }
@@ -136,6 +149,8 @@ class SettingsStore(private val context: Context) {
             pdfHeader = prefs.getBoolean("pdfHeader", d.pdfHeader),
             theme = prefs.getString("theme", d.theme) ?: d.theme,
             keepAudio = prefs.getBoolean("keepAudio", d.keepAudio),
+            glossary = prefs.getString("glossary", d.glossary) ?: d.glossary,
+            consentShown = prefs.getBoolean("consentShown", d.consentShown),
         )
     }
 }

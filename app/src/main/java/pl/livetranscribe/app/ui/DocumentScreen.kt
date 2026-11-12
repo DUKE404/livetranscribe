@@ -14,7 +14,9 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import pl.livetranscribe.app.data.ChunkStatus
 import pl.livetranscribe.app.data.SessionStatus
+import pl.livetranscribe.app.engine.MeetingNote
 import pl.livetranscribe.app.pdf.PdfActions
 import java.io.File
 
@@ -71,6 +74,10 @@ fun DocumentScreen(
     val pdfFile = remember(s.pdfPath) { s.pdfPath?.let { File(it) }?.takeIf { it.exists() } }
     val audio = remember(chunks) { vm.audioFiles(chunks) }
     val hasSpeakers = remember(chunks) { chunks.any { it.segmentsJson.contains("\"p\"") } }
+    val note = remember(s.summaryJson) { MeetingNote.fromJson(s.summaryJson) }
+    val noteSteps by vm.noteProgress.collectAsStateWithLifecycle()
+    val noteStep = noteSteps[id]
+    val clipboard = LocalClipboardManager.current
 
     LaunchedEffect(Unit) {
         if (!autoHandled) {
@@ -231,6 +238,21 @@ fun DocumentScreen(
                     Spacer(Modifier.height(8.dp))
                 }
                 Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
+                    if (!live && (note != null || (s.status == SessionStatus.DONE && text.isNotBlank()))) {
+                        NoteCard(
+                            note = note,
+                            progress = noteStep,
+                            onCreate = { vm.createNote(id) { msg -> scope.launch { snackbar.showSnackbar(msg) } } },
+                            onCopy = {
+                                note?.let { clipboard.setText(AnnotatedString(it.toPlainText())) }
+                                scope.launch { snackbar.showSnackbar("Skopiowano notatkę") }
+                            },
+                            onDelete = { vm.deleteNote(id) },
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        Text("Transkrypcja", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                    }
                     if (text.isBlank()) {
                         Text(
                             if (pending > 0 || s.status != SessionStatus.DONE) "Tekst pojawi się po przetworzeniu nagrania."
@@ -270,6 +292,7 @@ fun DocumentScreen(
         val edited = s.editedText != null
         var ts by remember { mutableStateOf(settings.timestamps) }
         var sp by remember { mutableStateOf(settings.speakers && hasSpeakers) }
+        var withNote by remember { mutableStateOf(true) }
         AlertDialog(
             onDismissRequest = { showPdfOptions = false },
             title = { Text("Generuj PDF") },
@@ -290,6 +313,12 @@ fun DocumentScreen(
                             Switch(checked = sp, onCheckedChange = { sp = it }, enabled = hasSpeakers)
                         }
                     }
+                    if (note != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Notatka AI na początku", Modifier.weight(1f))
+                            Switch(checked = withNote, onCheckedChange = { withNote = it })
+                        }
+                    }
                     if (pending > 0) {
                         Spacer(Modifier.height(8.dp))
                         Text(
@@ -306,7 +335,7 @@ fun DocumentScreen(
                     generating = true
                     scope.launch {
                         try {
-                            vm.generatePdf(id, ts, sp)
+                            vm.generatePdf(id, ts, sp, withNote)
                             snackbar.showSnackbar("PDF gotowy")
                         } catch (e: Exception) {
                             snackbar.showSnackbar("Nie udało się utworzyć PDF: ${e.message}")
@@ -336,6 +365,77 @@ fun DocumentScreen(
                     snackbar.showSnackbar("Nie udało się zapisać pliku: ${e.message}")
                 }
             }
+        }
+    }
+}
+
+/** Notatka AI: streszczenie, decyzje, zadania i otwarte kwestie – albo przycisk, który ją tworzy. */
+@Composable
+private fun NoteCard(
+    note: MeetingNote?,
+    progress: String?,
+    onCreate: () -> Unit,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Notatka ze spotkania", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            when {
+                progress != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(progress, style = MaterialTheme.typography.bodyMedium)
+                }
+                note == null -> {
+                    Text(
+                        "Sztuczna inteligencja przygotuje podsumowanie, listę decyzji i zadań (kto, co, do kiedy). " +
+                            "Notatka trafi też na początek PDF.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(onClick = onCreate, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+                        Text("UTWÓRZ NOTATKĘ AI", fontWeight = FontWeight.Bold)
+                    }
+                }
+                else -> {
+                    if (note.summary.isNotBlank()) {
+                        Text(note.summary, style = MaterialTheme.typography.bodyLarge, lineHeight = 24.sp)
+                    }
+                    NoteList("Decyzje", note.decisions)
+                    NoteList("Zadania", note.tasks.map { it.line() })
+                    NoteList("Otwarte kwestie", note.openQuestions)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Przygotowane przez AI – sprawdź przed wysłaniem.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row {
+                        TextButton(onClick = onCopy) { Text("Kopiuj") }
+                        TextButton(onClick = onCreate) { Text("Utwórz ponownie") }
+                        TextButton(onClick = onDelete) { Text("Usuń", color = MaterialTheme.colorScheme.error) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoteList(title: String, items: List<String>) {
+    if (items.isEmpty()) return
+    Spacer(Modifier.height(10.dp))
+    Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    for (item in items) {
+        Row(Modifier.padding(top = 4.dp)) {
+            Text("•", modifier = Modifier.width(16.dp))
+            SelectionContainer { Text(item, style = MaterialTheme.typography.bodyMedium) }
         }
     }
 }

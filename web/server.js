@@ -14,6 +14,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const { buildPdf } = require('./pdf');
+const { summarize, normalize } = require('./summary');
 
 const PORT = process.env.PORT || 3000;
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
@@ -25,11 +26,14 @@ const PROVIDERS = {
     url: process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1',
     key: () => process.env.GROQ_API_KEY || '',
     models: { fast: 'whisper-large-v3-turbo', balanced: 'whisper-large-v3', accurate: 'whisper-large-v3' },
+    // Groq wycofał Llama 3.3 70B (sierpień 2026) i zaleca gpt-oss-120b.
+    chatModel: process.env.GROQ_CHAT_MODEL || 'openai/gpt-oss-120b',
   },
   openai: {
     url: 'https://api.openai.com/v1',
     key: () => process.env.OPENAI_API_KEY || '',
     models: { fast: 'gpt-4o-mini-transcribe', balanced: 'gpt-4o-transcribe', accurate: 'gpt-4o-transcribe' },
+    chatModel: process.env.OPENAI_CHAT_MODEL || 'gpt-5-mini',
   },
 };
 
@@ -180,6 +184,32 @@ app.post(
   },
 );
 
+/**
+ * Notatka AI. Odpowiedź jest strumieniem linii JSON: {"progress": "..."} … {"note": {...}} albo {"error": "..."},
+ * żeby telefon widział postęp przy długich spotkaniach.
+ */
+app.post('/api/summary', requirePassword, rateLimit(6, 60000), express.json({ limit: '4mb' }), async (req, res) => {
+  const provider = PROVIDERS[req.query.provider] ? req.query.provider : 'groq';
+  const p = PROVIDERS[provider];
+  const key = (req.get('x-api-key') || '').trim() || p.key();
+  if (!key) return res.status(401).json({ error: 'Brak klucza API. Wpisz go w Ustawieniach.', code: 'nokey' });
+  const title = String((req.body && req.body.title) || 'Spotkanie').slice(0, 200);
+  const text = String((req.body && req.body.text) || '');
+  res.status(200);
+  res.set({ 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+  const send = (o) => { try { res.write(JSON.stringify(o) + '\n'); } catch (_) { /* klient się rozłączył */ } };
+  const ping = setInterval(() => send({ ping: 1 }), 15000);
+  try {
+    const note = await summarize({ url: p.url, key, model: p.chatModel }, title, text, (step) => send({ progress: step }));
+    send({ note });
+  } catch (e) {
+    send({ error: e.message || 'Nie udało się przygotować notatki.', status: e.status || 500 });
+  } finally {
+    clearInterval(ping);
+    res.end();
+  }
+});
+
 app.post('/api/pdf', rateLimit(30, 60000), express.json({ limit: '8mb' }), async (req, res) => {
   try {
     const b = req.body || {};
@@ -191,6 +221,7 @@ app.post('/api/pdf', rateLimit(30, 60000), express.json({ limit: '8mb' }), async
       fontSize: Math.min(16, Math.max(8, Number(b.fontSize) || 11.5)),
       headerOnEachPage: b.headerOnEachPage !== false,
       timeZone: typeof b.timeZone === 'string' ? b.timeZone.slice(0, 64) : 'Europe/Warsaw',
+      note: b.note && typeof b.note === 'object' ? normalize(b.note) : null,
     });
     res.set('Content-Type', 'application/pdf');
     res.set('Cache-Control', 'no-store');

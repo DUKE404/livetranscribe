@@ -101,6 +101,14 @@ class LogicTest {
     }
 
     @Test
+    fun promptCombinesGlossaryAndContext() {
+        assertEquals(null, TextComposer.buildPrompt("", null))
+        assertEquals("Słownik: Kowalczyk, KPI. Ostatnie zdanie.", TextComposer.buildPrompt(" Kowalczyk ,KPI;Kowalczyk", "Ostatnie zdanie."))
+        assertEquals("Poprzedni tekst.", TextComposer.buildPrompt("  ", "Poprzedni tekst."))
+        assertTrue(TextComposer.buildPrompt("A", "x".repeat(1000))!!.length < 200)
+    }
+
+    @Test
     fun cleanDropsKnownHallucinations() {
         assertEquals("", TextComposer.clean("Napisy stworzone przez społeczność Amara.org"))
         assertEquals("To jest zdanie.", TextComposer.clean("  To jest   zdanie. "))

@@ -37,6 +37,8 @@ import pl.livetranscribe.app.pdf.PdfGenerator
 import pl.livetranscribe.app.service.RecStatus
 import pl.livetranscribe.app.service.RecordingBus
 import pl.livetranscribe.app.service.TranscriptionQueue
+import pl.livetranscribe.app.engine.MeetingNote
+import pl.livetranscribe.app.engine.Summarizer
 import java.io.File
 import kotlin.math.PI
 import kotlin.math.abs
@@ -100,6 +102,9 @@ class SmokeTest {
     @Test
     fun b_recordingLifecycle() {
         compose.onNodeWithText("ROZPOCZNIJ TRANSKRYPCJĘ").performClick()
+        // Jednorazowe przypomnienie o uprzedzeniu uczestników (RODO).
+        waitForText("Rozumiem")
+        compose.onNodeWithText("Rozumiem").performClick()
         // Bez klucza API aplikacja ostrzega, ale pozwala nagrywać.
         waitForText("Nagrywaj mimo to")
         shot("04_brak_klucza")
@@ -159,6 +164,12 @@ class SmokeTest {
         val pdf = File(ctx.filesDir, "pdf/test/Test_LiveTranscribe.pdf")
         val pages = PdfGenerator.generate(
             pdf, "Spotkanie zespołu – zażółć gęślą jaźń ŁÓDŹ", System.currentTimeMillis(), 7_265_000, text, PdfGenerator.Options(),
+            MeetingNote(
+                "Zespół omówił budżet i harmonogram projektu. Ustalono priorytety na kolejny kwartał.",
+                listOf("Budżet zostaje bez zmian", "Start wdrożenia 1 grudnia"),
+                listOf(MeetingNote.Task("Przygotować harmonogram", "Anna", "piątek"), MeetingNote.Task("Wysłać ofertę", "", "")),
+                listOf("Czy potrzebny jest dodatkowy tester?"),
+            ),
         )
         assertTrue("za mało stron: $pages", pages >= 3)
         PdfRenderer(ParcelFileDescriptor.open(pdf, ParcelFileDescriptor.MODE_READ_ONLY)).use {
@@ -171,6 +182,45 @@ class SmokeTest {
         val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", pdf)
         ctx.contentResolver.openInputStream(uri)!!.use { assertEquals('%'.code, it.read()) }
         note("pdf", "pages=$pages bytes=${pdf.length()} saved=$where")
+    }
+
+    @Test
+    fun f_noteParsingAndMigration() {
+        val raw = "Oto notatka:\n{\"streszczenie\": \"Krótko.\", \"decyzje\": [\"A\"], " +
+            "\"zadania\": [{\"zadanie\": \"Zrobić X\", \"osoba\": \"Ola\", \"termin\": \"\"}, \"Zadzwonić\"], \"pytania_otwarte\": []}"
+        val note = MeetingNote.fromJson(Summarizer.extractJson(raw))
+        assertNotNull(note)
+        assertEquals("Krótko.", note!!.summary)
+        assertEquals(2, note.tasks.size)
+        assertEquals("Zrobić X — Ola", note.tasks[0].line())
+        assertEquals(note, MeetingNote.fromJson(note.toJson()))
+        val parts = Summarizer.split("Zdanie. ".repeat(5000), Summarizer.PART_CHARS)
+        assertTrue(parts.size >= 4)
+        assertTrue(parts.all { it.length <= Summarizer.PART_CHARS })
+
+        // Migracja bazy z wersji 1 (pierwsze wydanie) do 2: kolumna notatki dochodzi bez utraty danych.
+        val f = ctx.getDatabasePath("migration-test.db").apply { delete(); parentFile?.mkdirs() }
+        val raw1 = android.database.sqlite.SQLiteDatabase.openOrCreateDatabase(f, null)
+        raw1.execSQL("CREATE TABLE sessions (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, title TEXT NOT NULL, createdAt INTEGER NOT NULL, durationMs INTEGER NOT NULL, status TEXT NOT NULL, engine TEXT NOT NULL, editedText TEXT, pdfPath TEXT)")
+        raw1.execSQL("INSERT INTO sessions (title, createdAt, durationMs, status, engine) VALUES ('Stara', 1, 2, 'DONE', 'cloud')")
+        val helper = androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory().create(
+            androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(ctx).name("migration-test.db")
+                .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(1) {
+                    override fun onCreate(db: androidx.sqlite.db.SupportSQLiteDatabase) {}
+                    override fun onUpgrade(db: androidx.sqlite.db.SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                }).build(),
+        )
+        raw1.version = 1
+        raw1.close()
+        val db = helper.writableDatabase
+        pl.livetranscribe.app.data.MIGRATION_1_2.migrate(db)
+        db.query("SELECT title, summaryJson FROM sessions").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("Stara", c.getString(0))
+            assertTrue(c.isNull(1))
+        }
+        helper.close()
+        f.delete()
     }
 
     @Test

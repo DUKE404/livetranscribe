@@ -126,6 +126,19 @@ fun SettingsScreen(vm: MainViewModel, onTab: (String) -> Unit) {
                 Note("Silnik lokalny nie stawia przecinków i jest mniej dokładny niż chmura. Sprawdza się, gdy nie ma internetu albo nagranie nie może opuścić telefonu.")
             }
 
+            Section("Słownik nazw")
+            var glossary by remember { mutableStateOf(s.glossary) }
+            OutlinedTextField(
+                value = glossary,
+                onValueChange = { glossary = it; vm.update { st -> st.copy(glossary = it) } },
+                label = { Text("Nazwiska, firmy, produkty, skróty") },
+                placeholder = { Text("np. Kowalczyk, Allegro, KPI, Jira") },
+                minLines = 2,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            )
+            Note("Oddziel przecinkami. Model częściej zapisze te słowa poprawnie.")
+
             Section("Tekst")
             Toggle("Automatyczne zapisywanie", "Każda transkrypcja trafia do historii bez pytania", s.autosave) { v -> vm.update { it.copy(autosave = v) } }
             Toggle("Znaczniki czasu", "Np. [12:05] przed każdym fragmentem", s.timestamps) { v -> vm.update { it.copy(timestamps = v) } }

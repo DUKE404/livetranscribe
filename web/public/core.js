@@ -270,7 +270,17 @@
     return t;
   }
 
-  const api = { SAMPLE_RATE, Chunker, Resampler, wavBytes, formatTime, compose, clean, speakerLabel };
+  /** Podpowiedź dla modelu: słownik nazw + koniec poprzedniego fragmentu (Whisper czyta ok. 220 tokenów). */
+  function buildPrompt(glossary, previous) {
+    const terms = [...new Set(String(glossary || '').split(/[,;\n]/).map((t) => t.trim()).filter(Boolean))];
+    let out = '';
+    if (terms.length) out += 'Słownik: ' + terms.join(', ').slice(0, 300) + '. ';
+    const prev = String(previous || '').trim();
+    if (prev) out += prev.slice(-(terms.length ? 160 : 300));
+    return out.trim();
+  }
+
+  const api = { SAMPLE_RATE, Chunker, Resampler, wavBytes, formatTime, compose, clean, speakerLabel, buildPrompt };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LTCore = api;
 })(typeof self !== 'undefined' ? self : this);

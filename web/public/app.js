@@ -1,7 +1,7 @@
 /* LiveTranscribe – aplikacja w przeglądarce (PWA). */
 (() => {
   'use strict';
-  const { Chunker, Resampler, wavBytes, formatTime, compose, clean } = window.LTCore;
+  const { Chunker, Resampler, wavBytes, formatTime, compose, clean, buildPrompt } = window.LTCore;
 
   // ======================================================================
   // Ikony
@@ -53,6 +53,7 @@
   const DEFAULTS = {
     language: 'pl', provider: 'groq', quality: 'balanced', autosave: true, timestamps: false, speakers: false,
     pdfFontSize: 'medium', pdfHeader: true, theme: 'system', keepAudio: false, keepAwake: false,
+    glossary: '', consentShown: false,
   };
   function loadSettings() {
     try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('lt.settings') || '{}') }; } catch (_) { return { ...DEFAULTS }; }
@@ -219,7 +220,7 @@
             quality: settings.quality,
             language: settings.language === 'auto' ? '' : settings.language,
             speakers: settings.speakers && diarizationAvailable() ? '1' : '0',
-            prompt: prev ? prev.text.slice(-200) : '',
+            prompt: buildPrompt(settings.glossary, prev ? prev.text : ''),
           });
           let res;
           try {
@@ -529,7 +530,7 @@
   // ======================================================================
   // PDF: generowanie, pobieranie, udostępnianie
   // ======================================================================
-  async function generatePdf(sid, ts, sp) {
+  async function generatePdf(sid, ts, sp, withNote = true) {
     const s = await db.session(sid);
     const text = s.editedText != null ? s.editedText : composeChunks(await db.chunks(sid), ts, sp);
     const fontSize = { small: 10, large: 13.5 }[settings.pdfFontSize] || 11.5;
@@ -539,6 +540,7 @@
       body: JSON.stringify({
         title: s.title, createdAt: s.createdAt, durationMs: s.durationMs, text, fontSize,
         headerOnEachPage: settings.pdfHeader, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        note: withNote && s.note ? s.note : null,
       }),
     });
     if (!r.ok) throw new Error(r.status >= 500 ? 'błąd serwera' : 'kod ' + r.status);
@@ -580,6 +582,80 @@
     const w = window.open(url, '_blank');
     if (!w) downloadBlob(pdf.blob, pdf.name);
     setTimeout(() => URL.revokeObjectURL(url), 120000);
+  }
+
+  // ======================================================================
+  // Notatka AI ze spotkania
+  // ======================================================================
+  const noteJobs = new Map(); // id dokumentu -> opis etapu
+
+  async function createNote(sid) {
+    if (noteJobs.has(sid)) return;
+    noteJobs.set(sid, 'Przygotowuję…');
+    emit('note', { sessionId: sid });
+    try {
+      const s = await db.session(sid);
+      const text = s.editedText != null ? s.editedText : composeChunks(await db.chunks(sid), false, true);
+      const r = await fetch('/api/summary?provider=' + settings.provider, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ title: s.title, text }),
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Błąd serwera ' + r.status); }
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let note = null;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!line) continue;
+          const m = JSON.parse(line);
+          if (m.progress) { noteJobs.set(sid, m.progress); emit('note', { sessionId: sid }); }
+          if (m.error) throw new Error(m.error);
+          if (m.note) note = m.note;
+        }
+      }
+      if (!note) throw new Error('Połączenie zostało przerwane – spróbuj ponownie.');
+      await db.patchSession(sid, { note });
+      await db.kvDel('pdf:' + sid);
+      toast('Notatka gotowa');
+    } catch (e) {
+      toast(navigator.onLine ? (e.message || 'Nie udało się przygotować notatki') : 'Do notatki AI potrzebny jest internet.', 6000);
+    } finally {
+      noteJobs.delete(sid);
+      emit('note', { sessionId: sid });
+    }
+  }
+
+  const taskLine = (t) => { const x = [t.osoba, t.termin].filter(Boolean); return x.length ? `${t.zadanie} — ${x.join(', ')}` : t.zadanie; };
+  const noteText = (n) => [
+    n.streszczenie ? 'Podsumowanie\n' + n.streszczenie : '',
+    n.decyzje.length ? 'Decyzje\n' + n.decyzje.map((d) => '• ' + d).join('\n') : '',
+    n.zadania.length ? 'Zadania\n' + n.zadania.map((t) => '• ' + taskLine(t)).join('\n') : '',
+    n.pytania_otwarte.length ? 'Otwarte kwestie\n' + n.pytania_otwarte.map((d) => '• ' + d).join('\n') : '',
+  ].filter(Boolean).join('\n\n');
+
+  function noteCard(note, step) {
+    const list = (title, items) => (items.length ? `<h4 style="margin:12px 0 4px">${title}</h4><ul style="margin:0;padding-left:20px">${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : '');
+    let body;
+    if (step) body = `<div class="pending" style="margin:4px 0 0"><span class="spin"></span>${esc(step)}</div>`;
+    else if (!note) {
+      body = `<p class="small muted">Sztuczna inteligencja przygotuje podsumowanie, listę decyzji i zadań (kto, co, do kiedy). Notatka trafi też na początek PDF.</p>
+        <button class="btn block" data-act="note" style="margin-top:10px">UTWÓRZ NOTATKĘ AI</button>`;
+    } else {
+      body = (note.streszczenie ? `<p>${esc(note.streszczenie)}</p>` : '') + list('Decyzje', note.decyzje) +
+        list('Zadania', note.zadania.map(taskLine)) + list('Otwarte kwestie', note.pytania_otwarte) +
+        `<p class="small muted" style="margin-top:10px">Przygotowane przez AI – sprawdź przed wysłaniem.</p>
+        <div style="display:flex;flex-wrap:wrap"><button class="btn text" data-act="note-copy">Kopiuj</button><button class="btn text" data-act="note">Utwórz ponownie</button><button class="btn text danger-text" data-act="note-del">Usuń</button></div>`;
+    }
+    return `<div class="card" style="background:color-mix(in srgb, var(--primary-soft) 55%, var(--surface))"><h3 style="margin:0 0 6px">Notatka ze spotkania</h3>${body}</div>
+      <div class="section" style="margin-top:6px">Transkrypcja</div>`;
   }
 
   // ======================================================================
@@ -697,6 +773,7 @@
   function render() {
     cleanup.forEach((f) => f());
     cleanup = [];
+    app.onclick = null; app.onchange = null; app.oninput = null;
     const r = route();
     const view = { home: viewHome, rec: viewRec, doc: viewDoc, history: viewHistory, settings: viewSettings }[r.name] || viewHome;
     view(r);
@@ -835,6 +912,16 @@
 
     async function tryStart() {
       rec.set({ error: null });
+      if (!settings.consentShown) {
+        const ok = await dialog({
+          title: 'Zanim zaczniesz nagrywać',
+          body: `<p>Uprzedź uczestników rozmowy, że ją nagrywasz i zamieniasz na tekst – tego wymagają przepisy (RODO) i dobre obyczaje.</p>
+            <p>Fragmenty nagrania są wysyłane szyfrowanym połączeniem do ${esc(providerHost())} (serwery mogą być poza UE) i podlegają regulaminowi tej usługi. Nagrania i teksty przechowuje tylko Twój telefon.</p>`,
+          buttons: [{ label: 'Anuluj', value: false }, { label: 'Rozumiem', value: true }],
+        });
+        if (!ok) return undefined;
+        setSetting('consentShown', true);
+      }
       if (!hasKey()) {
         const v = await dialog({
           title: 'Brak klucza API',
@@ -930,6 +1017,7 @@
           ${live ? '<div class="banner"><span>Ten dokument jest właśnie nagrywany. Edycja i PDF będą dostępne po zakończeniu.</span></div>' : ''}
           ${pending && !live ? `<div class="banner ${queue.problem ? 'error' : ''}"><span>${queue.problem ? esc(queue.problem) + ' (w kolejce: ' + pending + ')' : 'Kończę transkrypcję – pozostało fragmentów: ' + pending}</span>${queue.problem ? '<button class="btn text" data-act="retry">Ponów</button>' : ''}</div>${queue.problem ? '' : '<div class="progress"><i></i></div>'}` : ''}
           ${failed ? `<div class="banner error"><span>Nie udało się przetworzyć fragmentów: ${failed}</span><button class="btn text" data-act="retryfailed">Ponów</button></div>` : ''}
+          ${!live && (s.note || noteJobs.has(id) || (s.status === 'DONE' && text.trim())) ? noteCard(s.note, noteJobs.get(id)) : ''}
           <div class="doctext">${text.trim() ? esc(text) : `<span class="muted">${pending || s.status !== 'DONE' ? 'Tekst pojawi się po przetworzeniu nagrania.' : 'Ten dokument nie zawiera tekstu (w nagraniu nie wykryto mowy).'}</span>`}</div>
         </main>
         <div class="actions"><div class="inner">
@@ -952,17 +1040,18 @@
         body: (edited ? '<p>Dokument zostanie utworzony z tekstu po Twoich poprawkach.</p>'
           : `<div class="set"><div class="lbl"><b>Znaczniki czasu</b></div><label class="switch"><input type="checkbox" id="o-ts" ${settings.timestamps ? 'checked' : ''}><span></span></label></div>
              <div class="set"><div class="lbl"><b>Rozmówcy</b>${hasSpk ? '' : '<small>Brak danych o rozmówcach w tym nagraniu</small>'}</div><label class="switch"><input type="checkbox" id="o-sp" ${hasSpk && settings.speakers ? 'checked' : ''} ${hasSpk ? '' : 'disabled'}><span></span></label></div>`) +
+          (s.note ? `<div class="set"><div class="lbl"><b>Notatka AI na początku</b></div><label class="switch"><input type="checkbox" id="o-note" checked><span></span></label></div>` : '') +
           (pending ? `<p class="small" style="color:var(--danger)">Uwaga: ${pending} fragmentów czeka jeszcze na transkrypcję i nie trafi do tego PDF.</p>` : ''),
         buttons: [{ label: 'Anuluj', value: null }, {
           label: 'Generuj',
-          value: (d) => ({ ts: edited ? false : $('#o-ts', d).checked, sp: edited ? false : $('#o-sp', d).checked }),
+          value: (d) => ({ ts: edited ? false : $('#o-ts', d).checked, sp: edited ? false : $('#o-sp', d).checked, note: $('#o-note', d) ? $('#o-note', d).checked : false }),
         }],
       });
       if (!res) return;
       generating = true;
       await draw();
       try {
-        await generatePdf(id, res.ts, res.sp);
+        await generatePdf(id, res.ts, res.sp, res.note);
         toast('PDF gotowy');
       } catch (e) {
         toast(navigator.onLine ? 'Nie udało się utworzyć PDF (' + e.message + '). Spróbuj ponownie.' : 'Do utworzenia PDF potrzebny jest internet.', 5000);
@@ -987,6 +1076,12 @@
         toast('Zapisano zmiany');
         draw();
       } else if (act === 'gen') genFlow();
+      else if (act === 'note') createNote(id);
+      else if (act === 'note-copy') {
+        try { await navigator.clipboard.writeText(noteText(s.note)); toast('Skopiowano notatkę'); } catch (_) { toast('Nie udało się skopiować'); }
+      } else if (act === 'note-del') {
+        if (await confirmDlg('Usunąć notatkę?', 'Transkrypcja zostanie bez zmian.', 'Usuń', true)) { await db.patchSession(id, { note: null }); await db.kvDel('pdf:' + id); }
+      }
       else if (act === 'retry') queue.resume();
       else if (act === 'retryfailed') {
         for (const c of await db.chunks(id)) if (c.status === 'FAILED' && c.audio) await db.putChunk({ ...c, status: 'PENDING', attempts: 0, error: null });
@@ -1031,6 +1126,7 @@
 
     on('data', (e) => { if (!editing && (!e.detail || !e.detail.sessionId || e.detail.sessionId === id)) draw(); });
     on('queue', () => { if (!editing) draw(); });
+    on('note', (e) => { if (!editing && e.detail.sessionId === id) draw(); });
     on('rec', () => { if (!editing) draw(); });
     await draw();
     if (autoPdf && rec.sessionId !== id) genFlow();
@@ -1102,6 +1198,11 @@
         <button class="btn" id="savekey">Zapisz i sprawdź klucz</button>
         ${serverConfig.passwordRequired ? `<div class="field"><label for="pw">Hasło dostępu do serwera</label><input type="password" id="pw" autocomplete="current-password" value="${esc(secret.get('password'))}"><small class="muted">Ustawione przez właściciela aplikacji, chroni jego klucz API.</small></div><button class="btn tonal" id="savepw">Zapisz hasło</button>` : ''}
 
+        <div class="section">Słownik nazw</div>
+        <div class="field"><label for="gloss">Nazwiska, firmy, produkty, skróty</label>
+          <textarea id="gloss" rows="3" style="width:100%;border-radius:12px;border:1.5px solid var(--line);background:var(--surface);padding:10px 12px" placeholder="np. Kowalczyk, Allegro, KPI, Jira">${esc(settings.glossary)}</textarea>
+          <small class="muted">Oddziel przecinkami. Model częściej zapisze te słowa poprawnie.</small></div>
+
         <div class="section">Tekst</div>
         <div class="card" style="padding:4px 16px">
           ${tog('autosave', 'Automatyczne zapisywanie', 'Każda transkrypcja trafia do historii bez pytania')}
@@ -1125,11 +1226,17 @@
         <div class="section">Aplikacja na Androida</div>
         <p class="small muted">Wolisz klasyczną aplikację? Pobierz plik APK (wymaga zgody na instalację z nieznanych źródeł).</p>
         <a class="btn outline" href="/apk">${icon('download')}Pobierz APK na Androida</a>
-        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.0</p>
+        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.1</p>
       </main>${nav('settings')}`;
     }
     draw();
 
+    app.oninput = (e) => {
+      if (e.target.id === 'gloss') {
+        settings = { ...settings, glossary: e.target.value };
+        try { localStorage.setItem('lt.settings', JSON.stringify(settings)); } catch (_) { /* */ }
+      }
+    };
     app.onchange = (e) => {
       const s = e.target.closest('[data-set]');
       if (s) { setSetting(s.dataset.set, s.value); draw(); return; }

@@ -1,6 +1,8 @@
 package pl.livetranscribe.app
 
+import android.content.Intent
 import android.os.Bundle
+import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -34,6 +36,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        handleIntent(intent)
         setContent {
             val vm: MainViewModel = viewModel()
             val settings by vm.settings.collectAsStateWithLifecycle()
@@ -49,11 +52,38 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val id = intent?.getLongExtra(EXTRA_SESSION, 0L) ?: 0L
+        if (id > 0) {
+            openSession.value = id
+            intent?.removeExtra(EXTRA_SESSION)
+        }
+    }
+
+    companion object {
+        const val EXTRA_SESSION = "session_id"
+        val openSession = MutableStateFlow<Long?>(null)
+    }
 }
 
 @Composable
 private fun AppNav(vm: MainViewModel) {
     val nav = rememberNavController()
+
+    // Dotknięcie powiadomienia „Transkrypcja gotowa”: otwórz ten dokument.
+    LaunchedEffect(Unit) {
+        MainActivity.openSession.collect { id ->
+            if (id != null && id > 0) {
+                MainActivity.openSession.value = null
+                nav.navigate("doc/$id")
+            }
+        }
+    }
 
     // Aplikacja otwarta w trakcie nagrywania (np. z powiadomienia): od razu pokaż ekran transkrypcji.
     LaunchedEffect(Unit) {

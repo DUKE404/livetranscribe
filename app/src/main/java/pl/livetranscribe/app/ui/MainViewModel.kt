@@ -22,6 +22,8 @@ import pl.livetranscribe.app.data.SessionEntity
 import pl.livetranscribe.app.data.SessionStatus
 import pl.livetranscribe.app.engine.CloudEngine
 import pl.livetranscribe.app.engine.LocalModel
+import pl.livetranscribe.app.engine.MeetingNote
+import pl.livetranscribe.app.engine.Summarizer
 import pl.livetranscribe.app.pdf.PdfActions
 import pl.livetranscribe.app.pdf.PdfGenerator
 import pl.livetranscribe.app.service.RecState
@@ -178,7 +180,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Generuje PDF i zapamiętuje go przy dokumencie. Zwraca plik albo rzuca wyjątek. */
-    suspend fun generatePdf(id: Long, timestamps: Boolean, speakers: Boolean): File = withContext(Dispatchers.Default) {
+    // ---------- notatka AI ----------
+
+    /** Postęp tworzenia notatki dla dokumentów (id -> opis etapu). */
+    val noteProgress = MutableStateFlow<Map<Long, String>>(emptyMap())
+
+    fun createNote(id: Long, onResult: (String) -> Unit) {
+        if (noteProgress.value.containsKey(id)) return
+        noteProgress.value = noteProgress.value + (id to "Przygotowuję…")
+        viewModelScope.launch {
+            try {
+                val session = dao.session(id) ?: return@launch
+                val transcript = app.repo.textOf(session, dao.chunks(id), false, true)
+                val s = settings.value
+                val note = Summarizer(s.baseUrl, app.settings.apiKey(s.provider), s.summaryModel)
+                    .summarize(session.title, transcript) { step -> noteProgress.value = noteProgress.value + (id to step) }
+                dao.setSummary(id, note.toJson())
+                invalidatePdf(id)
+                onResult("Notatka gotowa")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: java.io.IOException) {
+                onResult("Brak połączenia z internetem. Spróbuj ponownie, gdy wróci sieć.")
+            } catch (e: Exception) {
+                onResult(e.message ?: "Nie udało się przygotować notatki")
+            } finally {
+                noteProgress.value = noteProgress.value - id
+            }
+        }
+    }
+
+    fun deleteNote(id: Long) = viewModelScope.launch {
+        dao.setSummary(id, null)
+        invalidatePdf(id)
+    }
+
+    suspend fun generatePdf(id: Long, timestamps: Boolean, speakers: Boolean, includeNote: Boolean = true): File = withContext(Dispatchers.Default) {
         val session = dao.session(id) ?: throw IllegalStateException("Dokument nie istnieje")
         val text = app.repo.textOf(session, dao.chunks(id), timestamps, speakers)
         val s = settings.value
@@ -187,7 +224,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         dir.mkdirs()
         val file = File(dir, PdfActions.safeName(session.title) + ".pdf")
         val fontSize = when (s.pdfFontSize) { "small" -> 10f; "large" -> 13.5f; else -> 11.5f }
-        PdfGenerator.generate(file, session.title, session.createdAt, session.durationMs, text, PdfGenerator.Options(fontSize, s.pdfHeader))
+        val note = if (includeNote) MeetingNote.fromJson(session.summaryJson) else null
+        PdfGenerator.generate(file, session.title, session.createdAt, session.durationMs, text, PdfGenerator.Options(fontSize, s.pdfHeader), note)
         dao.setPdfPath(id, file.absolutePath)
         file
     }

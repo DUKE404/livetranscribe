@@ -101,6 +101,19 @@ object TextComposer {
         "dziękuję za uwagę i do zobaczenia",
     )
 
+    /**
+     * Podpowiedź dla modelu: słownik nazw + koniec poprzedniego fragmentu (ciągłość zdań).
+     * Whisper czyta tylko ok. 220 tokenów podpowiedzi, więc całość jest przycinana.
+     */
+    fun buildPrompt(glossary: String, previous: String?): String? {
+        val terms = glossary.split(',', ';', '\n').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val sb = StringBuilder()
+        if (terms.isNotEmpty()) sb.append("Słownik: ").append(terms.joinToString(", ").take(300)).append(". ")
+        val prev = previous?.trim().orEmpty()
+        if (prev.isNotEmpty()) sb.append(prev.takeLast(if (terms.isEmpty()) 300 else 160))
+        return sb.toString().trim().ifEmpty { null }
+    }
+
     fun clean(text: String): String {
         val t = text.trim().replace(Regex("[ \\t]+"), " ")
         if (t.length < 90) {

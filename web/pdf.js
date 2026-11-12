@@ -36,7 +36,7 @@ function dateText(ts, timeZone) {
   }
 }
 
-function buildPdf({ title, createdAt, durationMs, text, fontSize, headerOnEachPage, timeZone }) {
+function buildPdf({ title, createdAt, durationMs, text, fontSize, headerOnEachPage, timeZone, note }) {
   return new Promise((resolve, reject) => {
     const M = 56;
     const doc = new PDFDocument({
@@ -69,6 +69,35 @@ function buildPdf({ title, createdAt, durationMs, text, fontSize, headerOnEachPa
     doc.moveDown(0.9);
     doc.moveTo(M, doc.y).lineTo(M + W, doc.y).lineWidth(0.8).strokeColor(LINE).stroke();
     doc.moveDown(1.1);
+
+    // Notatka AI na początku dokumentu, potem pełna transkrypcja.
+    const hasNote = note && (note.streszczenie || note.decyzje.length || note.zadania.length || note.pytania_otwarte.length);
+    if (hasNote) {
+      const head = (t) => { doc.x = M; doc.font('B').fontSize(fontSize + 3.5).fillColor(ACCENT).text(t, { width: W }); doc.moveDown(0.4); };
+      const sub = (t) => { doc.x = M; doc.font('B').fontSize(fontSize + 0.5).fillColor(INK).text(t, { width: W }); doc.moveDown(0.25); };
+      const bullets = (items) => {
+        for (const it of items) {
+          doc.font('R').fontSize(fontSize).fillColor(INK).text('•  ' + it, M, undefined, { width: W, lineGap: fontSize * 0.42, indent: 0 });
+          doc.moveDown(0.2);
+        }
+        doc.moveDown(0.45);
+      };
+      head('Notatka ze spotkania');
+      if (note.streszczenie) {
+        sub('Podsumowanie');
+        doc.font('R').fontSize(fontSize).fillColor(INK).text(note.streszczenie, M, undefined, { width: W, lineGap: fontSize * 0.42 });
+        doc.moveDown(0.8);
+      }
+      if (note.decyzje.length) { sub('Decyzje'); bullets(note.decyzje); }
+      if (note.zadania.length) {
+        sub('Zadania');
+        bullets(note.zadania.map((t) => ([t.osoba, t.termin].filter(Boolean).length ? `${t.zadanie} — ${[t.osoba, t.termin].filter(Boolean).join(', ')}` : t.zadanie)));
+      }
+      if (note.pytania_otwarte.length) { sub('Otwarte kwestie'); bullets(note.pytania_otwarte); }
+      doc.font('R').fontSize(9).fillColor(GRAY).text('Notatkę przygotowała sztuczna inteligencja na podstawie transkrypcji – sprawdź ją przed wysłaniem.', M, undefined, { width: W });
+      doc.moveDown(1.2);
+      head('Transkrypcja');
+    }
 
     const paragraphs = text.split('\n').map((p) => p.trim()).filter(Boolean);
     if (!paragraphs.length) paragraphs.push('(Brak tekstu)');

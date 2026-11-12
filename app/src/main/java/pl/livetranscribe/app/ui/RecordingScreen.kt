@@ -54,6 +54,7 @@ fun RecordingScreen(
     var autoHandled by rememberSaveable { mutableStateOf(false) }
     var showNoKey by remember { mutableStateOf(false) }
     var showNoModel by remember { mutableStateOf(false) }
+    var showConsent by remember { mutableStateOf(false) }
     var showDenied by remember { mutableStateOf(false) }
     // null = brak okna; true = po zakończeniu otwórz dokument; false = zostań na ekranie
     var confirmFinish by remember { mutableStateOf<Boolean?>(null) }
@@ -84,13 +85,17 @@ fun RecordingScreen(
         if (wanted.isEmpty()) vm.start(context) else permissionLauncher.launch(wanted.toTypedArray())
     }
 
-    val tryStart: () -> Unit = {
-        vm.clearRecError()
+    val proceedStart: () -> Unit = {
         when {
             settings.engine == "local" && !modelInstalled -> showNoModel = true
             settings.engine == "cloud" && vm.apiKey().isBlank() -> showNoKey = true
             else -> launchRecording()
         }
+    }
+
+    val tryStart: () -> Unit = {
+        vm.clearRecError()
+        if (!settings.consentShown) showConsent = true else proceedStart()
     }
 
     LaunchedEffect(Unit) {
@@ -302,6 +307,27 @@ fun RecordingScreen(
         )
     }
 
+    if (showConsent) {
+        AlertDialog(
+            onDismissRequest = { showConsent = false },
+            title = { Text("Zanim zaczniesz nagrywać") },
+            text = {
+                Text(
+                    "Uprzedź uczestników rozmowy, że ją nagrywasz i zamieniasz na tekst – tego wymagają przepisy (RODO) i dobre obyczaje.\n\n" +
+                        if (settings.engine == "local") "W trybie lokalnym dźwięk nie opuszcza telefonu."
+                        else "W trybie chmurowym fragmenty nagrania są wysyłane szyfrowanym połączeniem do ${settings.host} (serwery mogą być poza UE) i podlegają regulaminowi tej usługi. Nagrania i teksty przechowuje tylko Twój telefon.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showConsent = false
+                    vm.update { it.copy(consentShown = true) }
+                    proceedStart()
+                }) { Text("Rozumiem") }
+            },
+            dismissButton = { TextButton(onClick = { showConsent = false }) { Text("Anuluj") } },
+        )
+    }
     if (showNoKey) {
         AlertDialog(
             onDismissRequest = { showNoKey = false },

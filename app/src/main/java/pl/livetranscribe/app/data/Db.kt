@@ -37,6 +37,8 @@ data class SessionEntity(
     /** Tekst po ręcznej edycji; null = tekst składany na bieżąco z fragmentów. */
     val editedText: String? = null,
     val pdfPath: String? = null,
+    /** Notatka AI (JSON z [pl.livetranscribe.app.engine.MeetingNote]) albo null. */
+    val summaryJson: String? = null,
 )
 
 @Entity(
@@ -100,6 +102,9 @@ interface AppDao {
     @Query("UPDATE sessions SET editedText = :text WHERE id = :id")
     suspend fun setEditedText(id: Long, text: String?)
 
+    @Query("UPDATE sessions SET summaryJson = :json WHERE id = :id")
+    suspend fun setSummary(id: Long, json: String?)
+
     @Query("UPDATE sessions SET pdfPath = :path WHERE id = :id")
     suspend fun setPdfPath(id: Long, path: String?)
 
@@ -134,7 +139,14 @@ interface AppDao {
     suspend fun previousText(sessionId: Long, idx: Int): String?
 }
 
-@Database(entities = [SessionEntity::class, ChunkEntity::class], version = 1, exportSchema = false)
+/** Wersja 2: notatka AI przy dokumencie. Istniejące transkrypcje zostają nietknięte. */
+val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE sessions ADD COLUMN summaryJson TEXT")
+    }
+}
+
+@Database(entities = [SessionEntity::class, ChunkEntity::class], version = 2, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): AppDao
 }

@@ -13,6 +13,7 @@ import android.text.TextPaint
 import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
+import pl.livetranscribe.app.engine.MeetingNote
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -43,7 +44,10 @@ object PdfGenerator {
     private val speakerRegex = Regex("^Rozmówca [^:]{1,20}:")
 
     /** Zwraca liczbę stron. */
-    fun generate(out: File, title: String, createdAt: Long, durationMs: Long, text: String, opts: Options): Int {
+    fun generate(
+        out: File, title: String, createdAt: Long, durationMs: Long, text: String, opts: Options,
+        note: MeetingNote? = null,
+    ): Int {
         val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = opts.fontSize
             color = INK
@@ -78,7 +82,37 @@ object PdfGenerator {
         val metaLayout = layout(meta, metaPaint, 1.35f)
         val headBlock = 6 + titleLayout.height + 10 + metaLayout.height + 16 + 20
 
-        val layouts = paragraphs.map { layout(styled(it), bodyPaint, 1.42f) }
+        val headPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = opts.fontSize + 3.5f
+            color = ACCENT
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        }
+        val subPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = opts.fontSize + 0.5f
+            color = INK
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        }
+        // Notatka AI (jeśli jest) na początku dokumentu, potem pełna transkrypcja.
+        val blocks = ArrayList<StaticLayout>()
+        if (note != null && !note.isEmpty) {
+            blocks.add(layout("Notatka ze spotkania", headPaint, 1.2f))
+            fun section(name: String, items: List<String>) {
+                if (items.isEmpty()) return
+                blocks.add(layout(name, subPaint, 1.2f))
+                for (it in items) blocks.add(layout("•  $it", bodyPaint, 1.42f))
+            }
+            if (note.summary.isNotBlank()) {
+                blocks.add(layout("Podsumowanie", subPaint, 1.2f))
+                note.summary.split('\n').map { it.trim() }.filter { it.isNotEmpty() }.forEach { blocks.add(layout(it, bodyPaint, 1.42f)) }
+            }
+            section("Decyzje", note.decisions)
+            section("Zadania", note.tasks.map { it.line() })
+            section("Otwarte kwestie", note.openQuestions)
+            blocks.add(layout("Notatkę przygotowała sztuczna inteligencja na podstawie transkrypcji – sprawdź ją przed wysłaniem.", metaPaint, 1.3f))
+            blocks.add(layout("Transkrypcja", headPaint, 1.2f))
+        }
+        paragraphs.forEach { blocks.add(layout(styled(it), bodyPaint, 1.42f)) }
+        val layouts: List<StaticLayout> = blocks
         val lineHeights = layouts.map { l -> IntArray(l.lineCount) { l.getLineBottom(it) - l.getLineTop(it) } }
         val pages = Paginator.paginate(
             lineHeights,

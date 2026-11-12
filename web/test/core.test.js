@@ -80,3 +80,18 @@ test('usuwanie halucynacji', () => {
   assert.strictEqual(clean('Napisy stworzone przez społeczność Amara.org'), '');
   assert.strictEqual(clean('  To jest   zdanie. '), 'To jest zdanie.');
 });
+
+const { split, extractJson, normalize } = require('../summary.js');
+const { buildPdf } = require('../pdf.js');
+
+test('notatka: podział, JSON i PDF', async () => {
+  const parts = split('Zdanie. '.repeat(5000));
+  assert.ok(parts.length >= 4);
+  assert.ok(parts.every((p) => p.length <= 9000));
+  assert.strictEqual(parts.join(' ').replace(/\s+/g, ' ').length >= 'Zdanie. '.repeat(5000).trim().length - 10, true);
+  const note = normalize(JSON.parse(extractJson('Oto: {"streszczenie":"Krótko.","decyzje":["A",null],"zadania":[{"zadanie":"Zrobić X","osoba":"Ola","termin":"null"},"Zadzwonić"],"pytania_otwarte":[]} koniec')));
+  assert.deepStrictEqual(note.zadania, [{ zadanie: 'Zrobić X', osoba: 'Ola', termin: '' }, { zadanie: 'Zadzwonić', osoba: '', termin: '' }]);
+  assert.deepStrictEqual(note.decyzje, ['A']);
+  const pdf = await buildPdf({ title: 'Test', createdAt: 0, durationMs: 1000, text: 'Treść transkrypcji.', fontSize: 11.5, headerOnEachPage: true, timeZone: 'Europe/Warsaw', note });
+  assert.strictEqual(pdf.slice(0, 4).toString(), '%PDF');
+});
