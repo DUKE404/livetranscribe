@@ -1,5 +1,20 @@
 # LiveTranscribe – instrukcja (wystarczy sam telefon)
 
+## Najprościej: wersja z przeglądarki (bez pliku APK)
+
+1. Otwórz w Chrome: **https://livetranscribe-1chw.onrender.com**
+   (pierwsze otwarcie po dłuższej przerwie może trwać do minuty – darmowy serwer się wybudza).
+2. Dotknij **Zainstaluj** na ekranie startowym (albo menu **⋮** → **Zainstaluj aplikację**). Ikona pojawi się na ekranie telefonu.
+3. W aplikacji: **Ustawienia** → **Hasło dostępu do serwera** → wpisz hasło od właściciela → **Zapisz hasło**.
+4. **ROZPOCZNIJ TRANSKRYPCJĘ** → przy pytaniu o mikrofon wybierz **Zezwól**.
+5. Po zakończeniu: **GENERUJ PDF** → **POBIERZ PDF** (folder Pobrane) lub **UDOSTĘPNIJ PDF** (WhatsApp, Gmail, Messenger…).
+
+Wersja z przeglądarki nie ma trybu lokalnego (offline). Przy kilkugodzinnych spotkaniach włącz **Nie wygaszaj ekranu** na ekranie transkrypcji i podłącz ładowarkę – najpewniejsza jest wtedy aplikacja APK opisana niżej.
+
+---
+
+## Aplikacja APK na Androida
+
 Wszystko poniżej robisz na telefonie z Androidem 10 lub nowszym. Nie potrzebujesz komputera.
 
 ## 1. Pobierz aplikację
