@@ -1,0 +1,1 @@
+komunikat=Nie rozpoznano formatu pliku. Wybierz nagranie dźwiękowe (np. MP3, M4A, WAV).
