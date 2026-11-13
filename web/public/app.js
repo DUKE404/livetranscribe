@@ -344,7 +344,9 @@
     async openMic() {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('unsupported');
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        // Bez tłumienia szumów i echa: ta obróbka zniekształca mowę w hałasie (metro, ulica), a Whisper lepiej
+        // radzi sobie z surowym dźwiękiem z szumem. Automatyczne wzmocnienie zostaje – wyrównuje głośność.
+        audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: true },
       });
       const AC = window.AudioContext || window.webkitAudioContext;
       let ctx;

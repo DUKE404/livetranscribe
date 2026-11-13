@@ -243,7 +243,7 @@ class LogicTest {
             TextComposer.isHallucination(text, start, end, ns, lp, cr)
         // Zmyślenia z ciszy / szumu (jak na zgłoszonym PDF)
         assertTrue(h("Dzięki za uwagę!", 0.0, 10.0, 0.45, -0.6))
-        assertTrue(h("Następna stacja.", 0.0, 11.0, 0.3, -0.5))
+        assertTrue(!h("Następna stacja: Rondo Daszyńskiego.", 0.0, 3.0, 0.05, -0.35)) // zapowiedź w metrze to mowa
         assertTrue(h("Dzień dobry.", 0.0, 14.0, 0.05, -0.3))      // 2 słowa „rozciągnięte” na 14 s ciszy
         assertTrue(h("...", 0.0, 12.0, 0.0, -0.1))
         assertTrue(h("Napisy wykonane przez społeczność", 0.0, 5.0, 0.2, -0.4))

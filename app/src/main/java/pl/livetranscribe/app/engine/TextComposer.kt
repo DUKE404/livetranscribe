@@ -99,11 +99,11 @@ object TextComposer {
      * Krótkie zdania, które Whisper „dopowiada” na ciszy lub szumie (najczęstsze w napisach filmów,
      * na których był uczony). Odrzucane tylko wtedy, gdy model sam nie jest pewny, że słyszy mowę.
      */
+    // Tylko klasyczne zmyślenia – bez zwrotów, które naprawdę często padają (np. „następna stacja” w metrze).
     private val hallucinations = setOf(
         "dziękuję za uwagę", "dzięki za uwagę", "dziękujemy za uwagę", "dziękuję", "dzięki", "dziękuję bardzo",
-        "dzięki wielkie", "bardzo dziękuję", "dziękujemy", "do zobaczenia", "do usłyszenia", "do widzenia",
-        "dzień dobry", "cześć", "hej", "pa", "pa pa", "dobranoc", "następna stacja", "muzyka", "oklaski",
-        "koniec", "to wszystko", "subskrybuj", "zapraszam", "dziękuję za obejrzenie", "dziękuję za oglądanie",
+        "dzięki wielkie", "bardzo dziękuję", "dziękujemy", "do zobaczenia", "do usłyszenia", "dzień dobry", "cześć",
+        "muzyka", "oklaski", "subskrybuj", "dziękuję za obejrzenie", "dziękuję za oglądanie",
         "thank you", "thanks for watching", "bye",
     )
     private val hallucinationPrefixes = listOf("napisy", "tłumaczenie", "zdjęcia i montaż", "transkrypcja", "subtitles")
