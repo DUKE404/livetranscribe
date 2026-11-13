@@ -47,6 +47,7 @@ Lokalnie: `./gradlew testDebugUnitTest assembleRelease` (JDK 17, Android SDK 35)
 
 ### Podpisywanie
 
-Stały klucz podpisu jest w repozytorium (`signing/release.jks`) i jest zaszyfrowany hasłem, które zna tylko
-GitHub: sekret `KEYSTORE_PASSWORD` (Settings → Secrets and variables → Actions). Z nim każda nowa wersja APK
+Wydanie APK wymaga jednego sekretu repozytorium: `KEYSTORE_PASSWORD` (Settings → Secrets and variables → Actions),
+z dowolnym hasłem (co najmniej 6 znaków). Przy pierwszej budowie GitHub sam tworzy stały klucz podpisu
+`signing/release.jks`, zaszyfrowany tym hasłem, i zapisuje go w repozytorium. Dzięki temu każda nowa wersja APK
 instaluje się na poprzedniej bez utraty danych. Bez sekretu budowa i testy działają, ale wydanie jest pomijane.

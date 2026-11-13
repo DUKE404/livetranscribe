@@ -41,13 +41,29 @@ jobs:
         run: |
           # Stały klucz (signing/release.jks) jest zaszyfrowany hasłem z sekretu KEYSTORE_PASSWORD.
           # Dzięki niemu każda nowa wersja instaluje się na poprzedniej bez utraty danych.
-          if [ -n "$KEYSTORE_PASSWORD" ] && [ -f signing/release.jks ]; then
-            echo "KEYSTORE_FILE=$GITHUB_WORKSPACE/signing/release.jks" >> "$GITHUB_ENV"
-            echo "signed=release" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Brak sekretu KEYSTORE_PASSWORD – APK zostanie podpisany kluczem testowym"
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::warning::Brak sekretu KEYSTORE_PASSWORD – APK zostanie zbudowany, ale wydanie będzie pominięte"
             echo "signed=debug" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          if [ ! -f signing/release.jks ]; then
+            # Pierwsze wydanie: klucz powstaje tutaj (hasło zna tylko sekret) i trafia do repozytorium.
+            mkdir -p signing
+            keytool -genkeypair -keystore signing/release.jks -storetype PKCS12 -alias livetranscribe \
+              -keyalg RSA -keysize 3072 -validity 36500 -storepass:env KEYSTORE_PASSWORD -keypass:env KEYSTORE_PASSWORD \
+              -dname "CN=LiveTranscribe, O=LiveTranscribe, C=PL"
+            git config user.name ci
+            git config user.email ci@users.noreply.github.com
+            git add signing/release.jks
+            git commit -m "Stały klucz podpisu APK (zaszyfrowany hasłem z sekretu) [skip ci]"
+            git push || (git pull --rebase && git push)
+          fi
+          if ! keytool -list -keystore signing/release.jks -storepass:env KEYSTORE_PASSWORD > /dev/null; then
+            echo "::error::Hasło w sekrecie KEYSTORE_PASSWORD nie pasuje do signing/release.jks"
+            exit 1
+          fi
+          echo "KEYSTORE_FILE=$GITHUB_WORKSPACE/signing/release.jks" >> "$GITHUB_ENV"
+          echo "signed=release" >> "$GITHUB_OUTPUT"
 
       - name: Testy i budowa (APK + AAB)
         env:
