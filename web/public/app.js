@@ -1556,6 +1556,7 @@
   (async () => {
     try { await recover(); } catch (e) { console.error(e); }
     render();
+    toast('Miłego dnia maluszku\u00a0❤️', 4000); // powitanie przy każdym otwarciu aplikacji
     await loadServerConfig();
     queue.kick();
   })();
