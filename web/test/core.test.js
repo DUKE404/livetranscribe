@@ -141,7 +141,7 @@ test('Float32 -> Int16', () => {
 test('filtr zmyśleń Whisper: odrzuca zmyślenia, zostawia mowę', () => {
   const h = (text, start, end, ns, lp, cr = 1.2) => isHallucination({ text, start, end, no_speech_prob: ns, avg_logprob: lp, compression_ratio: cr });
   assert.ok(h('Dzięki za uwagę!', 0, 10, 0.45, -0.6));
-  assert.ok(h('Następna stacja.', 0, 11, 0.3, -0.5));
+  assert.ok(!h('Następna stacja: Rondo Daszyńskiego.', 0, 3, 0.05, -0.35));
   assert.ok(h('Dzień dobry.', 0, 14, 0.05, -0.3));
   assert.ok(h('...', 0, 12, 0, -0.1));
   assert.ok(h('Omówiliśmy budżet na przyszły rok.', 0, 8, 0.7, -0.9));
