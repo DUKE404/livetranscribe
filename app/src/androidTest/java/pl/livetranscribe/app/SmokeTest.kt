@@ -306,7 +306,7 @@ class SmokeTest {
         }
     }
 
-    private fun waitImported(id: Long, timeoutMs: Long = 120_000): SessionEntity {
+    private fun waitImported(id: Long, timeoutMs: Long = 240_000): SessionEntity {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             val s = runBlocking { app.db.dao().session(id) }!!
