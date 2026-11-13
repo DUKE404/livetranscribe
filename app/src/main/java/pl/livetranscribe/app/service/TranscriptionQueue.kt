@@ -209,7 +209,7 @@ object TranscriptionQueue {
         closeSessionIfDone(chunk.sessionId)
     }
 
-    private suspend fun closeSessionIfDone(sessionId: Long) {
+    internal suspend fun closeSessionIfDone(sessionId: Long) {
         val dao = App.instance.db.dao()
         val session = dao.session(sessionId) ?: return
         if (session.status == SessionStatus.PROCESSING && dao.pendingCount(sessionId) == 0) {

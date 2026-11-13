@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { Chunker, Resampler, wavBytes, compose, clean } = require('../public/core.js');
+const { Chunker, FileSplitter, toInt16, Resampler, wavBytes, compose, clean } = require('../public/core.js');
 
 const SR = 16000;
 let seed = 7;
@@ -94,4 +94,46 @@ test('notatka: podział, JSON i PDF', async () => {
   assert.deepStrictEqual(note.decyzje, ['A']);
   const pdf = await buildPdf({ title: 'Test', createdAt: 0, durationMs: 1000, text: 'Treść transkrypcji.', fontSize: 11.5, headerOnEachPage: true, timeZone: 'Europe/Warsaw', note });
   assert.strictEqual(pdf.slice(0, 4).toString(), '%PDF');
+});
+
+// ---------- wczytywanie plików nagrań ----------
+
+function splitFile(s, ...parts) {
+  const out = [];
+  for (const p of parts) for (let i = 0; i < p.length; i += 4410) out.push(...s.feed(p.subarray(i, Math.min(p.length, i + 4410))));
+  const f = s.flush();
+  if (f) out.push(f);
+  return out;
+}
+
+test('plik: fragmenty obejmują całe nagranie bez dziur', () => {
+  const parts = [];
+  for (let k = 0; k < 12; k++) parts.push(speech(17000), silence(700));
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const s = new FileSplitter({ minChunkMs: 30000, maxChunkMs: 60000 });
+  const ch = splitFile(s, ...parts);
+  assert.ok(ch.length >= 4 && ch.length <= 8, 'liczba ' + ch.length);
+  assert.strictEqual(ch[0].startMs, 0);
+  for (let i = 1; i < ch.length; i++) assert.strictEqual(ch[i - 1].endMs, ch[i].startMs);
+  for (const c of ch.slice(0, -1)) assert.ok(c.endMs - c.startMs >= 30000 && c.endMs - c.startMs <= 60000);
+  assert.strictEqual(ch.reduce((n, c) => n + c.pcm.length, 0), total);
+  assert.strictEqual(s.positionMs, Math.floor(total * 1000 / SR));
+});
+
+test('plik: cięcie w pauzie', () => {
+  const ch = splitFile(new FileSplitter({ minChunkMs: 30000, maxChunkMs: 60000 }), speech(40000), silence(1000), speech(40000));
+  assert.strictEqual(ch.length, 2);
+  assert.ok(ch[0].endMs >= 40000 && ch[0].endMs <= 41000, 'cięcie ' + ch[0].endMs);
+});
+
+test('plik: cisza pominięta, czas płynie', () => {
+  const ch = splitFile(new FileSplitter({ minChunkMs: 30000, maxChunkMs: 60000 }), silence(70000), speech(5000));
+  assert.strictEqual(ch.length, 1);
+  assert.ok(ch[0].startMs >= 30000);
+  assert.strictEqual(ch[0].endMs, 75000);
+  assert.strictEqual(splitFile(new FileSplitter({ minChunkMs: 30000, maxChunkMs: 60000 }), silence(90000)).length, 0);
+});
+
+test('Float32 -> Int16', () => {
+  assert.deepStrictEqual(Array.from(toInt16(new Float32Array([0, 1, -1, 2, -0.5]))), [0, 32767, -32768, 32767, -16384]);
 });

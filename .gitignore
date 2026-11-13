@@ -9,3 +9,4 @@ node_modules/
 
 # Stały klucz podpisu jest celowo w repozytorium (zaszyfrowany hasłem z sekretu)
 !signing/release.jks
+.kotlin/

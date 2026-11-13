@@ -14,6 +14,7 @@ import pl.livetranscribe.app.data.AppDb
 import pl.livetranscribe.app.data.MIGRATION_1_2
 import pl.livetranscribe.app.data.Repository
 import pl.livetranscribe.app.data.SettingsStore
+import pl.livetranscribe.app.service.AudioImport
 import pl.livetranscribe.app.service.RecordingService
 import pl.livetranscribe.app.service.TranscriptionQueue
 
@@ -33,6 +34,7 @@ class App : Application() {
         repo = Repository(this, db.dao(), settings)
         RecordingService.createChannel(this)
         TranscriptionQueue.createChannel(this)
+        AudioImport.createChannel(this)
 
         // Czy użytkownik ma aplikację na ekranie (wtedy nie pokazujemy powiadomień „gotowe”).
         registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {

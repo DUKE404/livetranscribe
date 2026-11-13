@@ -9,7 +9,38 @@
 4. **ROZPOCZNIJ TRANSKRYPCJĘ** → przy pytaniu o mikrofon wybierz **Zezwól**.
 5. Po zakończeniu: **GENERUJ PDF** → **POBIERZ PDF** (folder Pobrane) lub **UDOSTĘPNIJ PDF** (WhatsApp, Gmail, Messenger…).
 
+Masz już gotowe nagranie (np. z dyktafonu)? Dotknij **WCZYTAJ NAGRANIE Z PLIKU** i wybierz plik (MP3, M4A, WAV, OGG, FLAC). Nie zamykaj strony, dopóki pasek wczytywania nie dojdzie do końca. W przeglądarce można wczytać plik do 400 MB; dłuższe nagrania wczytaj w aplikacji APK.
+
 Wersja z przeglądarki nie ma trybu lokalnego (offline). Przy kilkugodzinnych spotkaniach włącz **Nie wygaszaj ekranu** na ekranie transkrypcji i podłącz ładowarkę – najpewniejsza jest wtedy aplikacja APK opisana niżej.
+
+---
+
+## iPhone i iPad
+
+Na iPhonie działa wersja z przeglądarki (plik APK jest tylko dla Androida).
+
+1. Otwórz w **Safari**: **https://livetranscribe-1chw.onrender.com**
+2. Dotknij **Udostępnij** (kwadrat ze strzałką; w nowszym iOS najpierw **⋯** obok adresu) → **Do ekranu początkowego** → **Dodaj**.
+3. Uruchamiaj LiveTranscribe **z ikony na ekranie początkowym** – wtedy iPhone nie usuwa zapisanych transkrypcji.
+4. **Ustawienia** → **Hasło dostępu do serwera** → wpisz hasło od właściciela → **Zapisz hasło**.
+
+**Nagrywanie na żywo:** **ROZPOCZNIJ TRANSKRYPCJĘ** → przy pytaniu o mikrofon **Zezwól** (iPhone może pytać przy każdym uruchomieniu). Ważne: iOS wyłącza mikrofon stronom internetowym, gdy ekran zgaśnie albo przełączysz się do innej aplikacji. Dlatego:
+
+- zostaw włączone **Nie wygaszaj ekranu** (na iPhonie jest domyślnie włączone),
+- nie blokuj telefonu i nie przełączaj aplikacji w trakcie nagrywania,
+- jeśli aplikacja pokaże komunikat o wygaszaniu ekranu: Ustawienia iPhone'a → **Ekran i jasność** → **Automatyczna blokada** → **Nigdy** (na czas nagrania).
+
+Jeśli mikrofon jednak się wyłączy, aplikacja powie, ile sekund nagrania przepadło, i nagrywa dalej.
+
+**Długie spotkanie – najpewniejszy sposób na iPhonie:** nagraj je aplikacją **Dyktafon** (nagrywa też przy zablokowanym ekranie), a potem:
+
+1. W Dyktafonie dotknij nagrania → **⋯** → **Zachowaj w Plikach** (np. w folderze „Na moim iPhonie”).
+2. W LiveTranscribe: **WCZYTAJ NAGRANIE Z PLIKU** → **Przeglądaj** → wybierz zapisane nagranie.
+3. Nie zamykaj aplikacji, dopóki pasek wczytywania nie dojdzie do końca (zwykle kilka–kilkanaście sekund). Tekst pojawia się na bieżąco.
+
+Na iPhonie można wczytać naraz nagranie do 2 godzin (dłuższe podziel na części). Działają pliki M4A (Dyktafon), MP3, WAV, AAC, FLAC i filmy.
+
+**PDF na iPhonie:** **POBIERZ PDF** otwiera menu, w którym wybierasz **Zachowaj w Plikach**. **UDOSTĘPNIJ PDF** wyśle dokument przez AirDrop, Mail, WhatsApp, Messengera itd.
 
 ---
 
@@ -90,6 +121,23 @@ Brak internetu w trakcie spotkania niczego nie kasuje: nagranie jest zapisywane 
 4. Nazwę dokumentu zmienisz w menu **⋮** → **Zmień nazwę**.
 
 Wszystkie dokumenty znajdziesz w zakładce **Historia**.
+
+## 8a. Transkrypcja gotowego nagrania (np. z dyktafonu)
+
+Nie musisz nagrywać w aplikacji – możesz zamienić na tekst plik, który już masz.
+
+1. Na ekranie startowym dotknij **WCZYTAJ NAGRANIE Z PLIKU**.
+2. Wybierz plik w oknie systemowym (Pobrane, Dyktafon, Dysk Google…). Obsługiwane są m.in. **MP3, M4A, WAV, OGG, OPUS, FLAC, AMR, 3GP**, a także **filmy MP4** (liczy się ścieżka dźwiękowa).
+3. Aplikacja skopiuje plik, sprawdzi go i otworzy nowy dokument. Pasek pokazuje postęp wczytywania, a tekst pojawia się na bieżąco.
+
+Albo prościej: w aplikacji dyktafonu (lub w menedżerze plików) wybierz nagranie → **Udostępnij** → **LiveTranscribe**.
+
+Dobrze wiedzieć:
+
+- Wczytywanie trwa dalej po zablokowaniu telefonu – widać je w powiadomieniu „Wczytywanie nagrania”. Jeśli system zamknie aplikację, wczytywanie wznowi się samo od miejsca, w którym przerwało.
+- Nagranie jest dzielone na fragmenty po 1–2 minuty, zawsze w pauzie między słowami. Nic nie jest pomijane poza całkowitą ciszą.
+- Bez internetu fragmenty czekają w telefonie i dokończą się, gdy połączenie wróci – tak samo jak przy nagrywaniu.
+- Oryginalny plik zostaje nietknięty w swoim folderze. Kopia w aplikacji jest usuwana zaraz po wczytaniu.
 
 ## 9. Wygeneruj PDF
 

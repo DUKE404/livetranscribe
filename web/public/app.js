@@ -1,7 +1,7 @@
 /* LiveTranscribe – aplikacja w przeglądarce (PWA). */
 (() => {
   'use strict';
-  const { Chunker, Resampler, wavBytes, formatTime, compose, clean, buildPrompt } = window.LTCore;
+  const { Chunker, FileSplitter, toInt16, Resampler, wavBytes, formatTime, compose, clean, buildPrompt } = window.LTCore;
 
   // ======================================================================
   // Ikony
@@ -19,6 +19,7 @@
     list: 'M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z',
     gear: 'M19.1 12.9a7 7 0 0 0 0-1.8l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.6-.9L14.8 3h-4l-.4 2.6a7 7 0 0 0-1.6.9l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 1.8l-2 1.6 2 3.4 2.4-1c.5.4 1 .7 1.6.9l.4 2.6h4l.4-2.6c.6-.2 1.1-.5 1.6-.9l2.4 1 2-3.4-2-1.6zM12.8 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z',
     download: 'M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z',
+    file: 'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 9h-3v3.75c0 1.24-1.01 2.25-2.25 2.25S8.5 15.99 8.5 14.75s1.01-2.25 2.25-2.25c.46 0 .89.14 1.25.38V9h4v2zm-3-2V3.5L18.5 9H13z',
   };
   const icon = (n) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${P[n]}"/></svg>`;
 
@@ -31,9 +32,13 @@
   const fmtDur = (ms) => formatTime(ms || 0);
   const fmtDate = (ts) => new Intl.DateTimeFormat('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(ts));
   const fmtBytes = (b) => (b >= 1e9 ? (b / 1073741824).toFixed(1).replace('.', ',') + ' GB' : Math.round(b / 1048576) + ' MB');
-  const statusLabel = (s) => ({ RECORDING: 'Nagrywanie', PAUSED: 'Pauza', PROCESSING: 'Przetwarzanie' }[s] || 'Gotowa');
+  const statusLabel = (s) => ({ RECORDING: 'Nagrywanie', PAUSED: 'Pauza', PROCESSING: 'Przetwarzanie', IMPORTING: 'Wczytywanie' }[s] || 'Gotowa');
   // Nazwy plików bez polskich znaków – część przeglądarek i aplikacji źle je obsługuje.
   const safeName = (t) => (String(t || '').trim().replace(/[łŁ]/g, (c) => (c === 'ł' ? 'l' : 'L')).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, '_').replace(/^[_.]+|[_.]+$/g, '').slice(0, 80) || 'Transkrypcja');
+
+  // iPhone/iPad (iPadOS przedstawia się jak Mac z ekranem dotykowym) i Safari – wszystkie przeglądarki na iOS to WebKit.
+  const IS_IOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const IS_SAFARI = IS_IOS || (/safari/i.test(navigator.userAgent) && !/chrome|chromium|crios|fxios|edg|android/i.test(navigator.userAgent));
 
   const bus = new EventTarget();
   const emit = (type, detail) => bus.dispatchEvent(new CustomEvent(type, { detail }));
@@ -52,7 +57,7 @@
   // ======================================================================
   const DEFAULTS = {
     language: 'pl', provider: 'groq', quality: 'balanced', autosave: true, timestamps: false, speakers: false,
-    pdfFontSize: 'medium', pdfHeader: true, theme: 'system', keepAudio: false, keepAwake: false,
+    pdfFontSize: 'medium', pdfHeader: true, theme: 'system', keepAudio: false, keepAwake: IS_IOS,
     glossary: '', consentShown: false,
   };
   function loadSettings() {
@@ -314,7 +319,7 @@
 
     async start() {
       if (this.status !== 'idle') return;
-      this.set({ status: 'starting', error: null });
+      this.set({ status: 'starting', error: null, wakeLockFailed: false });
       try {
         await this.openMic();
       } catch (e) {
@@ -341,8 +346,11 @@
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      const AC = window.AudioContext || window.webkitAudioContext;
       let ctx;
-      try { ctx = new AudioContext({ sampleRate: 16000, latencyHint: 'playback' }); } catch (_) { ctx = new AudioContext(); }
+      // Safari źle łączy mikrofon z kontekstem o innej częstotliwości niż sprzętowa – tam przepróbkowujemy sami.
+      if (IS_SAFARI) ctx = new AC();
+      else try { ctx = new AC({ sampleRate: 16000, latencyHint: 'playback' }); } catch (_) { ctx = new AC(); }
       const src = ctx.createMediaStreamSource(stream);
       const sink = ctx.createGain();
       sink.gain.value = 0;
@@ -359,7 +367,8 @@
       }
       src.connect(node);
       node.connect(sink);
-      ctx.onstatechange = () => { if (ctx.state === 'suspended' && this.status === 'recording') ctx.resume().catch(() => {}); };
+      // Safari po rozmowie telefonicznej lub Siri przechodzi w stan „interrupted”.
+      ctx.onstatechange = () => { if ((ctx.state === 'suspended' || ctx.state === 'interrupted') && this.status === 'recording') ctx.resume().catch(() => {}); };
       if (ctx.state === 'suspended') await ctx.resume();
       stream.getAudioTracks().forEach((t) => {
         t.onended = () => { if (this.status === 'recording') this.micLost(); };
@@ -468,14 +477,20 @@
       }
       const pend = (await db.chunks(sid)).some((c) => c.status === 'PENDING');
       await db.patchSession(sid, { status: pend ? 'PROCESSING' : 'DONE', durationMs: this.elapsedMs });
+      // Ostatni fragment mógł zostać przetworzony w trakcie kończenia – wtedy nikt inny nie zamknie dokumentu.
+      await closeIfDone(sid);
       this.set({ status: 'idle', sessionId: 0, chunker: null });
       queue.kick();
       return sid;
     },
 
     async applyWakeLock() {
-      if (!settings.keepAwake || !('wakeLock' in navigator) || this.status !== 'recording') return;
-      try { this.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { /* */ }
+      if (!settings.keepAwake || this.status !== 'recording') return;
+      let ok = false;
+      if ('wakeLock' in navigator) {
+        try { this.wakeLock = await navigator.wakeLock.request('screen'); ok = true; } catch (_) { /* */ }
+      }
+      if (!ok && document.visibilityState === 'visible') this.set({ wakeLockFailed: true });
     },
     releaseWakeLock() {
       try { if (this.wakeLock) this.wakeLock.release(); } catch (_) { /* */ }
@@ -494,20 +509,52 @@
     return 'Nie udało się włączyć mikrofonu: ' + ((e && e.message) || n || 'nieznany błąd');
   }
 
+  // Ile nagrania przepadło, gdy aplikacja była w tle (iOS wyłącza wtedy mikrofon stronom internetowym).
+  let hiddenAt = 0;
+  let elapsedAtHide = 0;
   document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      hiddenAt = rec.status === 'recording' ? Date.now() : 0;
+      elapsedAtHide = rec.elapsedMs;
+      return;
+    }
+    if (hiddenAt && rec.status === 'recording') {
+      const away = Date.now() - hiddenAt;
+      const startElapsed = elapsedAtHide;
+      hiddenAt = 0;
+      setTimeout(() => {
+        if (rec.status !== 'recording') return;
+        const lost = away - (rec.elapsedMs - startElapsed);
+        if (lost > 3000) {
+          rec.set({ error: `Telefon wyłączył mikrofon na ok. ${Math.round(lost / 1000)} s, gdy aplikacja była w tle lub ekran był zablokowany – ta część rozmowy nie została nagrana. Nagrywanie trwa dalej.` + (IS_IOS ? ' Na iPhonie trzymaj aplikację otwartą przy włączonym ekranie.' : '') });
+        }
+      }, 1500);
+    }
     if (document.visibilityState === 'visible') {
-      if (rec.ctx && rec.ctx.state === 'suspended' && rec.status === 'recording') rec.ctx.resume().catch(() => {});
+      if (rec.ctx && (rec.ctx.state === 'suspended' || rec.ctx.state === 'interrupted') && rec.status === 'recording') rec.ctx.resume().catch(() => {});
       if (rec.status === 'recording' && settings.keepAwake && !rec.wakeLock) rec.applyWakeLock();
       queue.kick();
     }
   });
   window.addEventListener('beforeunload', (e) => {
-    if (rec.status === 'recording' || rec.status === 'paused') { e.preventDefault(); e.returnValue = ''; }
+    if (rec.status === 'recording' || rec.status === 'paused' || importJobs.size) { e.preventDefault(); e.returnValue = ''; }
   });
 
   /** Po ponownym otwarciu: zamknij przerwane sesje i odzyskaj ostatni fragment. */
   async function recover() {
     const tail = await db.kvGet('tail');
+    for (const s of await db.sessions()) {
+      // Strona zamknięta w trakcie wczytywania pliku: zostaje to, co zdążyło się zapisać.
+      if (s.status === 'IMPORTING') {
+        const chunks = await db.chunks(s.id);
+        await db.patchSession(s.id, {
+          status: 'PROCESSING',
+          durationMs: Math.max(s.durationMs || 0, chunks.reduce((m, c) => Math.max(m, c.endMs), 0)),
+          importError: 'Wczytywanie pliku zostało przerwane (strona została zamknięta). Tekst może obejmować tylko część nagrania – wczytaj plik ponownie, aby przetworzyć całość.',
+        });
+        await closeIfDone(s.id);
+      }
+    }
     for (const s of await db.sessions()) {
       if (s.status !== 'RECORDING' && s.status !== 'PAUSED') continue;
       const chunks = await db.chunks(s.id);
@@ -525,6 +572,164 @@
     }
     if (tail) await db.kvDel('tail');
     for (const s of await db.sessions()) if (s.status === 'PROCESSING') await closeIfDone(s.id);
+  }
+
+  // ======================================================================
+  // Wczytywanie pliku nagrania (np. z dyktafonu)
+  // ======================================================================
+  const importJobs = new Map(); // id dokumentu -> { progress: 0..1 }
+  const MAX_IMPORT_BYTES = 400 * 1024 * 1024;
+  class SessionGone extends Error {}
+
+  /** Okno „proszę czekać” bez przycisków. Zwraca funkcję, która je zamyka. */
+  function busyDlg(text) {
+    const d = document.createElement('dialog');
+    d.innerHTML = `<div class="body"><div class="pending" style="margin:0"><span class="spin"></span>${esc(text)}</div></div>`;
+    d.addEventListener('cancel', (e) => e.preventDefault());
+    document.body.appendChild(d);
+    d.showModal();
+    return () => { try { d.close(); } catch (_) { /* */ } d.remove(); };
+  }
+
+  /** Czas trwania nagrania z nagłówka pliku (bez dekodowania) albo null, gdy przeglądarka go nie zna. */
+  function mediaDuration(file) {
+    return new Promise((resolve) => {
+      let url = '';
+      const a = document.createElement('audio');
+      const done = (v) => { clearTimeout(t); a.removeAttribute('src'); try { a.load(); } catch (_) { /* */ } if (url) URL.revokeObjectURL(url); resolve(v); };
+      const t = setTimeout(() => done(null), 6000);
+      a.preload = 'metadata';
+      a.onloadedmetadata = () => done(Number.isFinite(a.duration) && a.duration > 0 ? a.duration : null);
+      a.onerror = () => done(null);
+      try { url = URL.createObjectURL(file); a.src = url; } catch (_) { done(null); }
+    });
+  }
+
+  /** Dekoduje plik – przeglądarka od razu zamienia go na 16 kHz (mniej pamięci). */
+  async function decodeFile(arrayBuffer) {
+    const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    let ctx = null;
+    try { ctx = new Offline(1, 1, 16000); } catch (_) { /* starsza przeglądarka */ }
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    try {
+      return await new Promise((resolve, reject) => {
+        const p = ctx.decodeAudioData(arrayBuffer, resolve, reject);
+        if (p && p.then) p.then(resolve, reject);
+      });
+    } finally {
+      try { if (typeof ctx.close === 'function') ctx.close(); } catch (_) { /* */ }
+    }
+  }
+
+  /** Odczytuje plik, zakłada dokument i zaczyna dzielenie na fragmenty. Zwraca id dokumentu. */
+  async function importFile(file) {
+    if (file.size > MAX_IMPORT_BYTES) {
+      throw new Error(`Plik jest za duży (${fmtBytes(file.size)}). W przeglądarce można wczytać do 400 MB – dłuższe nagrania wczytaj w aplikacji na Androida.`);
+    }
+    const seconds = await mediaDuration(file);
+    const maxH = IS_IOS ? 2 : 3;
+    if (seconds && seconds > maxH * 3600) {
+      throw new Error(`Nagranie trwa ${formatTime(seconds * 1000)} – w przeglądarce${IS_IOS ? ' na iPhonie' : ''} można wczytać naraz do ${maxH} godzin (więcej nie zmieści się w pamięci). Podziel je na części i wczytaj osobno${IS_IOS ? '' : ' albo użyj aplikacji na Androida'}.`);
+    }
+    let audio;
+    const close = busyDlg('Odczytuję plik nagrania… Przy długich nagraniach może to potrwać do minuty.');
+    try {
+      audio = await decodeFile(await (file.arrayBuffer ? file.arrayBuffer() : new Response(file).arrayBuffer()));
+    } catch (e) {
+      throw new Error('Nie udało się odczytać pliku. To nie jest nagranie, plik jest uszkodzony albo ta przeglądarka nie obsługuje jego formatu (spróbuj MP3, M4A lub WAV). Bardzo długie nagrania mogą nie zmieścić się w pamięci – wtedy użyj aplikacji na Androida.');
+    } finally {
+      close();
+    }
+    if (!audio.length) throw new Error('Plik nie zawiera dźwięku.');
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) { /* */ }
+    const now = Date.now();
+    const title = file.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim().slice(0, 80) || 'Nagranie ' + fmtDate(now);
+    const id = await db.addSession({
+      title, createdAt: now, durationMs: Math.round(audio.duration * 1000), status: 'IMPORTING', provider: settings.provider, editedText: null,
+    });
+    importJobs.set(id, { progress: 0 });
+    emit('data', { sessionId: id });
+    runImport(id, audio);
+    return id;
+  }
+
+  /** Dzieli zdekodowany dźwięk na fragmenty w pauzach i oddaje je do kolejki transkrypcji. */
+  async function runImport(id, audio) {
+    let error = null;
+    let lastEmit = 0;
+    try {
+      const sr = audio.sampleRate;
+      const chans = [];
+      for (let c = 0; c < audio.numberOfChannels; c++) chans.push(audio.getChannelData(c));
+      const resampler = sr === 16000 ? null : new Resampler(sr);
+      const splitter = new FileSplitter();
+      const block = sr * 5;
+      const mono = new Float32Array(block);
+      let idx = 0;
+      const save = async (c) => {
+        if (!(await db.session(id))) throw new SessionGone();
+        await db.addChunk({
+          sessionId: id, idx: idx++, startMs: c.startMs, endMs: c.endMs, status: 'PENDING', text: '', segs: [], attempts: 0,
+          audio: new Blob([wavBytes(c.pcm)], { type: 'audio/wav' }),
+        });
+        queue.kick();
+      };
+      for (let off = 0; off < audio.length; off += block) {
+        const n = Math.min(block, audio.length - off);
+        for (let i = 0; i < n; i++) {
+          let v = 0;
+          for (const ch of chans) v += ch[off + i];
+          mono[i] = v / chans.length;
+        }
+        const pcm = resampler ? resampler.process(mono.subarray(0, n)) : toInt16(mono.subarray(0, n));
+        for (const c of splitter.feed(pcm)) await save(c);
+        importJobs.set(id, { progress: (off + n) / audio.length });
+        const now = Date.now();
+        if (now - lastEmit > 400) { lastEmit = now; emit('import', { sessionId: id }); }
+        if ((off / block) % 12 === 11) await sleep(0); // pozwól stronie odświeżyć widok
+      }
+      const last = splitter.flush();
+      if (last) await save(last);
+    } catch (e) {
+      if (e instanceof SessionGone) { importJobs.delete(id); emit('import', { sessionId: id }); return; }
+      console.error(e);
+      error = 'Wczytywanie pliku przerwane: ' + (e.message || 'nieznany błąd') + '. Tekst może obejmować tylko część nagrania.';
+    }
+    importJobs.delete(id);
+    if (!(await db.session(id))) return;
+    await db.patchSession(id, { status: 'PROCESSING', importError: error });
+    await closeIfDone(id);
+    emit('import', { sessionId: id });
+    queue.kick();
+  }
+
+  /** Wybrany plik: przypomnienie o RODO, sprawdzenie klucza, potem wczytanie. */
+  async function startImport(file) {
+    if (!settings.consentShown) {
+      const ok = await dialog({
+        title: 'Zanim wczytasz nagranie',
+        body: `<p>Upewnij się, że osoby nagrane w pliku wiedzą o nagraniu i jego zamianie na tekst – tego wymagają przepisy (RODO) i dobre obyczaje.</p>
+          <p>Fragmenty nagrania są wysyłane szyfrowanym połączeniem do ${esc(providerHost())} (serwery mogą być poza UE) i podlegają regulaminowi tej usługi. Nagrania i teksty przechowuje tylko Twój telefon.</p>`,
+        buttons: [{ label: 'Anuluj', value: false }, { label: 'Rozumiem', value: true }],
+      });
+      if (!ok) return;
+      setSetting('consentShown', true);
+    }
+    if (!hasKey()) {
+      const v = await dialog({
+        title: 'Brak klucza API',
+        body: '<p>Do zamiany mowy na tekst potrzebny jest klucz API (np. darmowy z Groq). Możesz dodać go teraz albo wczytać plik mimo to – nagranie zostanie zachowane w telefonie, a tekst pojawi się po dodaniu klucza.</p>',
+        buttons: [{ label: 'Wczytaj mimo to', value: 'go' }, { label: 'Ustawienia', value: 'set' }],
+      });
+      if (v === 'set') { go('#/settings'); return; }
+      if (v !== 'go') return;
+    }
+    try {
+      const id = await importFile(file);
+      go('#/doc/' + id);
+    } catch (e) {
+      toast(e.message || 'Nie udało się wczytać pliku', 7000);
+    }
   }
 
   // ======================================================================
@@ -580,8 +785,28 @@
   function openPdf(pdf) {
     const url = URL.createObjectURL(pdf.blob);
     const w = window.open(url, '_blank');
-    if (!w) downloadBlob(pdf.blob, pdf.name);
+    if (!w) {
+      if (IS_IOS) saveFiles([new File([pdf.blob], pdf.name, { type: 'application/pdf' })]);
+      else downloadBlob(pdf.blob, pdf.name);
+    }
     setTimeout(() => URL.revokeObjectURL(url), 120000);
+  }
+
+  /**
+   * Zapis plików w telefonie. Na iPhonie link do pobrania w aplikacji z ekranu początkowego potrafi otworzyć plik
+   * bez możliwości powrotu – dlatego otwieramy arkusz udostępniania z opcją „Zachowaj w Plikach”.
+   */
+  async function saveFiles(files) {
+    if (IS_IOS && navigator.canShare && navigator.canShare({ files })) {
+      try {
+        await navigator.share({ files });
+        return 'share';
+      } catch (e) {
+        if (e && e.name === 'AbortError') return 'cancel';
+      }
+    }
+    files.forEach((f, i) => setTimeout(() => downloadBlob(f, f.name), i * 400));
+    return 'download';
   }
 
   // ======================================================================
@@ -663,7 +888,7 @@
   // ======================================================================
   let installEvent = null;
   const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isIOS = () => IS_IOS;
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; emit('install'); });
   window.addEventListener('appinstalled', () => { installEvent = null; toast('Aplikacja zainstalowana – znajdziesz ją na ekranie głównym.'); emit('install'); });
 
@@ -678,7 +903,7 @@
     await dialog({
       title: 'Zainstaluj aplikację',
       body: isIOS()
-        ? '<ol class="steps"><li>Dotknij przycisku <b>Udostępnij</b> (kwadrat ze strzałką) na dole Safari.</li><li>Wybierz <b>Do ekranu początkowego</b>.</li><li>Dotknij <b>Dodaj</b>.</li></ol>'
+        ? '<ol class="steps"><li>Otwórz tę stronę w <b>Safari</b>.</li><li>Dotknij <b>Udostępnij</b> (kwadrat ze strzałką; w nowszym iOS najpierw <b>⋯</b> obok adresu).</li><li>Wybierz <b>Do ekranu początkowego</b> i dotknij <b>Dodaj</b>.</li></ol><p class="small">Uruchamiaj aplikację z ikony – wtedy iPhone nie usuwa jej danych.</p>'
         : '<ol class="steps"><li>Dotknij menu <b>⋮</b> w prawym górnym rogu Chrome.</li><li>Wybierz <b>Zainstaluj aplikację</b> albo <b>Dodaj do ekranu głównego</b>.</li><li>Potwierdź <b>Zainstaluj</b>.</li></ol><p class="small">Ikona LiveTranscribe pojawi się na ekranie telefonu.</p>',
       buttons: [{ label: 'OK', value: true }],
     });
@@ -795,6 +1020,11 @@
           <h2>Zamień mowę na tekst</h2>
           <p class="muted">Spotkania, wykłady i rozmowy – tekst pojawia się na żywo, a gotowy PDF wyślesz jednym dotknięciem.</p>
           <button class="btn hero block" data-act="start">${icon('mic')}${active ? 'WRÓĆ DO TRANSKRYPCJI' : 'ROZPOCZNIJ TRANSKRYPCJĘ'}</button>
+          <button class="btn outline block" data-act="import" style="margin-top:10px">${icon('file')}WCZYTAJ NAGRANIE Z PLIKU</button>
+          <input type="file" id="importfile" accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac,.aac,.webm,.mp4,.mov,.caf,.aif,.aiff,.qta" hidden>
+          <p class="small muted" style="margin:4px 0 0">${IS_IOS
+            ? 'Np. z Dyktafonu: w nagraniu dotknij ⋯ → Zachowaj w Plikach, a potem wybierz je tutaj. Działa z M4A, MP3, WAV, AAC, FLAC i filmami. Plik zostaje w telefonie – do transkrypcji trafiają tylko jego fragmenty.'
+            : 'Np. z dyktafonu: MP3, M4A, WAV, OGG, FLAC albo film MP4. Plik zostaje w telefonie – do transkrypcji trafiają tylko jego fragmenty.'}</p>
           ${installCard()}
           <div class="card soft">
             <p>${hasKey() ? `Tryb chmurowy: dźwięk jest wysyłany szyfrowanym połączeniem do ${esc(providerHost())}` : '<b>Brak klucza API</b> – dodaj go w Ustawieniach, aby zamieniać mowę na tekst.'}</p>
@@ -809,8 +1039,16 @@
       const t = e.target.closest('[data-act],[data-open]');
       if (!t) return;
       if (t.dataset.act === 'start') go(rec.status !== 'idle' ? '#/rec' : '#/rec?auto=1');
+      // Okno wyboru pliku musi otworzyć się od razu po dotknięciu (wymóg przeglądarek).
+      else if (t.dataset.act === 'import') $('#importfile').click();
       else if (t.dataset.act === 'install') doInstall();
       else if (t.dataset.open) go('#/doc/' + t.dataset.open);
+    };
+    app.onchange = (e) => {
+      if (e.target.id !== 'importfile') return;
+      const f = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (f) startImport(f);
     };
     on('data', draw);
     on('install', draw);
@@ -835,7 +1073,7 @@
           <button class="btn tonal" id="resume">${icon('play')}WZNÓW</button>
           <button class="btn" id="end">ZAKOŃCZ</button>
         </div>
-        <div class="set"><div class="lbl"><b>Nie wygaszaj ekranu</b><small>Najpewniejsze przy długich spotkaniach. Wyłączone – nagrywanie zwykle trwa też przy zablokowanym telefonie.</small></div>
+        <div class="set"><div class="lbl"><b>Nie wygaszaj ekranu</b><small>${IS_IOS ? 'Na iPhonie konieczne: przy zablokowanym ekranie lub w innej aplikacji iOS wyłącza mikrofon stronom internetowym.' : 'Najpewniejsze przy długich spotkaniach. Wyłączone – nagrywanie zwykle trwa też przy zablokowanym telefonie.'}</small></div>
           <label class="switch"><input type="checkbox" id="awake" ${settings.keepAwake ? 'checked' : ''}><span></span></label></div>
       </main>`;
 
@@ -876,6 +1114,12 @@
       els.end.disabled = !recOrPause;
       let b = '';
       if (rec.error) b += `<div class="banner error"><span>${esc(rec.error)}</span></div>`;
+      if (IS_IOS && st === 'idle' && !rec.lastSessionId) {
+        b += '<div class="banner"><span>iPhone: nagrywaj z aplikacją na ekranie i nie blokuj telefonu. Długie spotkanie najpewniej nagrasz <b>Dyktafonem</b>, a potem wczytasz plik: Start → WCZYTAJ NAGRANIE Z PLIKU.</span></div>';
+      }
+      if (rec.wakeLockFailed && settings.keepAwake && (st === 'recording' || st === 'paused')) {
+        b += '<div class="banner"><span>Ten telefon nie pozwala stronie blokować wygaszania ekranu. Na czas nagrania ustaw: Ustawienia → Ekran i jasność → Automatyczna blokada → Nigdy.</span></div>';
+      }
       if (queue.problem && (st !== 'idle' || rec.lastSessionId)) b += `<div class="banner error"><span>${esc(queue.problem)}</span><button class="btn text" data-act="retry">Ponów</button></div>`;
       els.banners.innerHTML = b;
       els.after.innerHTML = st === 'idle' && rec.lastSessionId
@@ -991,7 +1235,9 @@
       if (!s) { app.innerHTML = `<header class="top"><a class="iconbtn" href="#/history" style="color:inherit">${icon('back')}</a><h1>Dokument</h1></header><main><p class="empty">Ten dokument nie istnieje.</p></main>`; return; }
       const chunks = await db.chunks(id);
       const live = rec.sessionId === id;
-      if (live) editing = false;
+      const importing = s.status === 'IMPORTING';
+      const job = importJobs.get(id);
+      if (live || importing) editing = false;
       const pending = chunks.filter((c) => c.status === 'PENDING').length;
       const failed = chunks.filter((c) => c.status === 'FAILED').length;
       const text = s.editedText != null ? s.editedText : composeChunks(chunks, settings.timestamps, settings.speakers && diarizationAvailable());
@@ -1009,19 +1255,22 @@
       app.innerHTML = `
         <header class="top"><a class="iconbtn" href="#/history" aria-label="Wróć" style="color:inherit">${icon('back')}</a>
           <h1>${esc(s.title)}</h1>
-          <button class="iconbtn" data-act="edit" aria-label="Edytuj tekst" ${live ? 'disabled' : ''}>${icon('edit')}</button>
+          <button class="iconbtn" data-act="edit" aria-label="Edytuj tekst" ${live || importing ? 'disabled' : ''}>${icon('edit')}</button>
           <button class="iconbtn" data-act="menu" aria-label="Więcej">${icon('more')}</button></header>
         <main class="with-actions">
           <div class="session" style="box-shadow:none;background:none;padding:0;cursor:default"><div class="main"><div class="meta" style="margin:0">
             <span>${fmtDate(s.createdAt)} · ${fmtDur(s.durationMs)}</span><span class="chip ${s.status === 'DONE' ? 'done' : ''}">${statusLabel(s.status)}</span></div></div></div>
           ${live ? '<div class="banner"><span>Ten dokument jest właśnie nagrywany. Edycja i PDF będą dostępne po zakończeniu.</span></div>' : ''}
-          ${pending && !live ? `<div class="banner ${queue.problem ? 'error' : ''}"><span>${queue.problem ? esc(queue.problem) + ' (w kolejce: ' + pending + ')' : 'Kończę transkrypcję – pozostało fragmentów: ' + pending}</span>${queue.problem ? '<button class="btn text" data-act="retry">Ponów</button>' : ''}</div>${queue.problem ? '' : '<div class="progress"><i></i></div>'}` : ''}
+          ${importing ? `<div class="banner"><span>Wczytuję plik nagrania${job ? ' – ' + Math.floor(job.progress * 100) + '%' : '…'}. Nie zamykaj tej strony do końca wczytywania – tekst pojawia się na bieżąco.</span></div>
+            <div class="progress det"><i style="width:${job ? Math.floor(job.progress * 100) : 0}%"></i></div>` : ''}
+          ${s.importError ? `<div class="banner error"><span>${esc(s.importError)}</span><button class="btn text" data-act="importok">OK</button></div>` : ''}
+          ${pending && !live && (!importing || queue.problem) ? `<div class="banner ${queue.problem ? 'error' : ''}"><span>${queue.problem ? esc(queue.problem) + ' (w kolejce: ' + pending + ')' : 'Kończę transkrypcję – pozostało fragmentów: ' + pending}</span>${queue.problem ? '<button class="btn text" data-act="retry">Ponów</button>' : ''}</div>${queue.problem ? '' : '<div class="progress"><i></i></div>'}` : ''}
           ${failed ? `<div class="banner error"><span>Nie udało się przetworzyć fragmentów: ${failed}</span><button class="btn text" data-act="retryfailed">Ponów</button></div>` : ''}
-          ${!live && (s.note || noteJobs.has(id) || (s.status === 'DONE' && text.trim())) ? noteCard(s.note, noteJobs.get(id)) : ''}
+          ${!live && !importing && (s.note || noteJobs.has(id) || (s.status === 'DONE' && text.trim())) ? noteCard(s.note, noteJobs.get(id)) : ''}
           <div class="doctext">${text.trim() ? esc(text) : `<span class="muted">${pending || s.status !== 'DONE' ? 'Tekst pojawi się po przetworzeniu nagrania.' : 'Ten dokument nie zawiera tekstu (w nagraniu nie wykryto mowy).'}</span>`}</div>
         </main>
         <div class="actions"><div class="inner">
-          ${!pdf ? `<button class="btn block" data-act="gen" ${live || generating ? 'disabled' : ''}>${generating ? '<span class="spin"></span>Tworzę PDF…' : 'GENERUJ PDF'}</button>`
+          ${!pdf ? `<button class="btn block" data-act="gen" ${live || importing || generating ? 'disabled' : ''}>${generating ? '<span class="spin"></span>Tworzę PDF…' : 'GENERUJ PDF'}</button>`
             : `<p class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">PDF gotowy: ${esc(pdf.name)}</p>
                <button class="btn block" data-act="download">${icon('download')}POBIERZ PDF</button>
                <div class="row"><button class="btn tonal" data-act="share">UDOSTĘPNIJ PDF</button><button class="btn tonal" data-act="open">OTWÓRZ PDF</button></div>
@@ -1083,6 +1332,7 @@
         if (await confirmDlg('Usunąć notatkę?', 'Transkrypcja zostanie bez zmian.', 'Usuń', true)) { await db.patchSession(id, { note: null }); await db.kvDel('pdf:' + id); }
       }
       else if (act === 'retry') queue.resume();
+      else if (act === 'importok') await db.patchSession(id, { importError: null });
       else if (act === 'retryfailed') {
         for (const c of await db.chunks(id)) if (c.status === 'FAILED' && c.audio) await db.putChunk({ ...c, status: 'PENDING', attempts: 0, error: null });
         if (s.status === 'DONE') await db.patchSession(id, { status: 'PROCESSING' });
@@ -1091,8 +1341,8 @@
         const pdf = await db.kvGet('pdf:' + id);
         const name = await promptDlg('Nazwa pliku', pdf.name.replace(/\.pdf$/i, ''), 'Pobierz', '.pdf');
         if (!name) return;
-        downloadBlob(pdf.blob, safeName(name) + '.pdf');
-        toast('Zapisano w folderze Pobrane (Download): ' + safeName(name) + '.pdf', 6000);
+        const how = await saveFiles([new File([pdf.blob], safeName(name) + '.pdf', { type: 'application/pdf' })]);
+        if (how === 'download') toast((IS_IOS ? 'Zapisano w aplikacji Pliki → Pobrane: ' : 'Zapisano w folderze Pobrane (Download): ') + safeName(name) + '.pdf', 6000);
       } else if (act === 'share') sharePdf(await db.kvGet('pdf:' + id), s.title);
       else if (act === 'open') openPdf(await db.kvGet('pdf:' + id));
       else if (act === 'menu') {
@@ -1114,7 +1364,7 @@
           const text = s.editedText != null ? s.editedText : composeChunks(chunks, settings.timestamps, settings.speakers && diarizationAvailable());
           try { await navigator.clipboard.writeText(text); toast('Skopiowano tekst'); } catch (_) { toast('Nie udało się skopiować'); }
         } else if (v === 'audio') {
-          audio.forEach((c, i) => setTimeout(() => downloadBlob(c.audio, safeName(s.title) + '_' + String(c.idx + 1).padStart(3, '0') + '.wav'), i * 400));
+          await saveFiles(audio.map((c) => new File([c.audio], safeName(s.title) + '_' + String(c.idx + 1).padStart(3, '0') + '.wav', { type: 'audio/wav' })));
         } else if (v === 'delete') {
           if (await confirmDlg('Usunąć dokument?', `„${s.title}” zostanie trwale usunięty z aplikacji. Pliki PDF pobrane wcześniej pozostaną w telefonie.`, 'Usuń', true)) {
             await db.deleteSession(id);
@@ -1128,8 +1378,10 @@
     on('queue', () => { if (!editing) draw(); });
     on('note', (e) => { if (!editing && e.detail.sessionId === id) draw(); });
     on('rec', () => { if (!editing) draw(); });
+    on('import', (e) => { if (!editing && e.detail.sessionId === id) draw(); });
     await draw();
-    if (autoPdf && rec.sessionId !== id) genFlow();
+    const s0 = await db.session(id);
+    if (autoPdf && rec.sessionId !== id && s0 && s0.status !== 'IMPORTING') genFlow();
   }
 
   // ---------- Historia ----------
@@ -1145,13 +1397,13 @@
         e.stopPropagation();
         const id = Number(m.dataset.menu);
         const s = await db.session(id);
-        const live = rec.sessionId === id;
+        const live = rec.sessionId === id || (s && s.status === 'IMPORTING');
         const v = await menuDlg([
           { label: 'Otwórz', value: 'open' },
           { label: 'Zmień nazwę', value: 'rename' },
           { label: 'Edytuj tekst', value: 'edit', disabled: live },
           { label: 'Generuj PDF', value: 'pdf', disabled: live },
-          { label: 'Usuń', value: 'delete', danger: true, disabled: live },
+          { label: 'Usuń', value: 'delete', danger: true, disabled: rec.sessionId === id },
         ]);
         if (v === 'open') go('#/doc/' + id);
         if (v === 'edit') go('#/doc/' + id + '?edit=1');
@@ -1226,7 +1478,7 @@
         <div class="section">Aplikacja na Androida</div>
         <p class="small muted">Wolisz klasyczną aplikację? Pobierz plik APK (wymaga zgody na instalację z nieznanych źródeł).</p>
         <a class="btn outline" href="/apk">${icon('download')}Pobierz APK na Androida</a>
-        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.1</p>
+        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.2</p>
       </main>${nav('settings')}`;
     }
     draw();

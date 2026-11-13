@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.net.Uri
 import android.os.Environment
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
@@ -36,7 +37,11 @@ import pl.livetranscribe.app.pdf.PdfActions
 import pl.livetranscribe.app.pdf.PdfGenerator
 import pl.livetranscribe.app.service.RecStatus
 import pl.livetranscribe.app.service.RecordingBus
+import pl.livetranscribe.app.service.AudioImport
 import pl.livetranscribe.app.service.TranscriptionQueue
+import pl.livetranscribe.app.audio.UnsupportedAudioException
+import java.io.DataOutputStream
+import java.io.FileOutputStream
 import pl.livetranscribe.app.engine.MeetingNote
 import pl.livetranscribe.app.engine.Summarizer
 import java.io.File
@@ -276,6 +281,93 @@ class SmokeTest {
             assertEquals(null, dao.session(id))
         }
         assertTrue(!dir.exists())
+        TranscriptionQueue.stalled.value = null
+    }
+
+    /** WAV o dowolnej częstotliwości i liczbie kanałów – jak z dyktafonu, nie jak z aplikacji. */
+    private fun writeWav(file: File, rate: Int, channels: Int, seconds: List<Pair<Int, Boolean>>) {
+        val frames = seconds.sumOf { it.first } * rate
+        val dataLen = frames * channels * 2
+        DataOutputStream(FileOutputStream(file).buffered()).use { o ->
+            fun i32(v: Int) { o.write(v and 0xFF); o.write(v shr 8 and 0xFF); o.write(v shr 16 and 0xFF); o.write(v shr 24 and 0xFF) }
+            fun i16(v: Int) { o.write(v and 0xFF); o.write(v shr 8 and 0xFF) }
+            o.writeBytes("RIFF"); i32(36 + dataLen); o.writeBytes("WAVE")
+            o.writeBytes("fmt "); i32(16); i16(1); i16(channels); i32(rate); i32(rate * channels * 2); i16(channels * 2); i16(16)
+            o.writeBytes("data"); i32(dataLen)
+            var n = 0L
+            for ((sec, loud) in seconds) {
+                repeat(sec * rate) {
+                    val env = 0.55 + 0.45 * sin(2 * PI * 3.0 * n / rate)
+                    val v = if (loud) (sin(2 * PI * 220.0 * n / rate) * 9000 * env).toInt() else ((n * 7919) % 11 - 5).toInt()
+                    repeat(channels) { i16(v) }
+                    n++
+                }
+            }
+        }
+    }
+
+    private fun waitImported(id: Long, timeoutMs: Long = 240_000): SessionEntity {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val s = runBlocking { app.db.dao().session(id) }!!
+            if (s.status != SessionStatus.IMPORTING) return s
+            Thread.sleep(300)
+        }
+        throw AssertionError("wczytywanie pliku nie skończyło się w czasie")
+    }
+
+    @Test
+    fun g_importAudioFile() {
+        val dao = app.db.dao()
+        // 1) WAV 44,1 kHz stereo: 70 s mowy, 1 s ciszy, 60 s mowy -> dwa fragmenty, cięcie w pauzie.
+        val wav = File(ctx.cacheDir, "Dyktafon 2026-11-13.wav")
+        writeWav(wav, 44_100, 2, listOf(70 to true, 1 to false, 60 to true))
+        val id = runBlocking { AudioImport.start(ctx, Uri.fromFile(wav)) }
+        val s = waitImported(id)
+        val chunks = runBlocking { dao.chunks(id) }
+        note("import_wav", "status=${s.status} durationMs=${s.durationMs} chunks=" + chunks.joinToString { "${it.startMs}-${it.endMs} ${File(it.audioPath ?: "").name}" } + " error=${AudioImport.errors.value[id]}")
+        assertEquals("Dyktafon 2026-11-13", s.title)
+        assertEquals(null, AudioImport.errors.value[id])
+        assertEquals(2, chunks.size)
+        assertEquals(0L, chunks[0].startMs)
+        assertEquals(chunks[0].endMs, chunks[1].startMs)
+        assertTrue("cięcie poza pauzą: ${chunks[0].endMs}", chunks[0].endMs in 70_000..71_000)
+        assertTrue("koniec: ${chunks[1].endMs}", abs(chunks[1].endMs - 131_000) <= 50)
+        assertTrue("czas trwania: ${s.durationMs}", abs(s.durationMs - 131_000) <= 50)
+        assertTrue(chunks.all { it.status == ChunkStatus.PENDING && File(it.audioPath!!).exists() })
+        assertTrue("kopia pliku nie została usunięta", !AudioImport.sourceDir(ctx, id).exists())
+        shot("09_import_wczytany")
+
+        // 2) M4A (AAC) – najczęstszy format dyktafonów w telefonach.
+        val pcm = ShortArray(16_000 * 20) { (sin(2 * PI * 330 * it / 16000.0) * 7000 * (0.55 + 0.45 * sin(2 * PI * 3.0 * it / 16000.0))).toInt().toShort() }
+        val src = File(ctx.cacheDir, "notatka.wav")
+        File(ctx.cacheDir, "notatka.m4a").delete()
+        AudioFiles.writeWav(src, pcm)
+        val m4a = AudioFiles.compressOrSame(src)
+        assertTrue(m4a.name.endsWith(".m4a"))
+        val id2 = runBlocking { AudioImport.start(ctx, Uri.fromFile(m4a)) }
+        val s2 = waitImported(id2)
+        val c2 = runBlocking { dao.chunks(id2) }
+        note("import_m4a", "durationMs=${s2.durationMs} chunks=" + c2.joinToString { "${it.startMs}-${it.endMs}" })
+        assertEquals(1, c2.size)
+        assertTrue("czas trwania m4a: ${s2.durationMs}", abs(s2.durationMs - 20_000) <= 300)
+
+        // 3) Plik, który nie jest nagraniem: czytelny komunikat, żaden dokument nie powstaje.
+        val before = runBlocking { dao.allSessions().size }
+        val txt = File(ctx.cacheDir, "lista.txt").apply { writeText("to nie jest nagranie ".repeat(200)) }
+        try {
+            runBlocking { AudioImport.start(ctx, Uri.fromFile(txt)) }
+            throw AssertionError("plik tekstowy nie powinien zostać przyjęty")
+        } catch (e: UnsupportedAudioException) {
+            note("import_txt", "komunikat=${e.message}")
+        }
+        assertEquals(before, runBlocking { dao.allSessions().size })
+
+        runBlocking {
+            app.repo.deleteSession(id)
+            app.repo.deleteSession(id2)
+        }
+        assertTrue(!app.repo.audioDir(id).exists())
         TranscriptionQueue.stalled.value = null
     }
 }

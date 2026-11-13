@@ -4,6 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import pl.livetranscribe.app.audio.Chunker
+import pl.livetranscribe.app.audio.FileSplitter
+import pl.livetranscribe.app.audio.PcmConverter
 import pl.livetranscribe.app.engine.ChunkText
 import pl.livetranscribe.app.engine.Seg
 import pl.livetranscribe.app.engine.TextComposer
@@ -11,6 +13,7 @@ import pl.livetranscribe.app.pdf.Paginator
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 class LogicTest {
@@ -129,5 +132,108 @@ class LogicTest {
             }
         }
         for ((b, lines) in blocks.withIndex()) assertEquals(lines.size, seen[b])
+    }
+
+    // ---------- wczytywanie plików nagrań ----------
+
+    private fun splitAll(s: FileSplitter, vararg parts: ShortArray): List<Chunker.Chunk> {
+        val out = ArrayList<Chunker.Chunk>()
+        for (p in parts) {
+            var i = 0
+            while (i < p.size) { // bloki o „nierównej” długości, jak z dekodera
+                val n = minOf(4410, p.size - i)
+                out.addAll(s.feed(p.copyOfRange(i, i + n)))
+                i += n
+            }
+        }
+        s.flush()?.let { out.add(it) }
+        return out
+    }
+
+    @Test
+    fun fileSplitterCoversWholeRecordingWithoutGaps() {
+        val parts = ArrayList<ShortArray>()
+        repeat(12) { parts.add(speech(17_000)); parts.add(silence(700)) } // ok. 3,5 min mowy z krótkimi pauzami
+        val total = parts.sumOf { it.size }
+        val s = FileSplitter(sr, 30_000, 60_000)
+        val chunks = splitAll(s, *parts.toTypedArray())
+        assertTrue("liczba fragmentów: ${chunks.size}", chunks.size in 4..8)
+        assertEquals(0L, chunks.first().startMs)
+        for (i in 1 until chunks.size) assertEquals("dziura lub nakładanie", chunks[i - 1].endMs, chunks[i].startMs)
+        for (c in chunks.dropLast(1)) assertTrue("długość ${c.endMs - c.startMs}", c.endMs - c.startMs in 30_000..60_000)
+        assertEquals("nic nie może zginąć", total, chunks.sumOf { it.pcm.size })
+        assertEquals(total * 1000L / sr, s.positionMs)
+    }
+
+    @Test
+    fun fileSplitterCutsInsidePause() {
+        val chunks = splitAll(FileSplitter(sr, 30_000, 60_000), speech(40_000), silence(1_000), speech(40_000))
+        assertEquals(2, chunks.size)
+        val cut = chunks[0].endMs
+        assertTrue("cięcie w $cut ms zamiast w pauzie 40000–41000", cut in 40_000..41_000)
+    }
+
+    @Test
+    fun fileSplitterSkipsSilenceButKeepsTime() {
+        val s = FileSplitter(sr, 30_000, 60_000)
+        val chunks = splitAll(s, silence(70_000), speech(5_000))
+        assertEquals(1, chunks.size)
+        assertTrue("start ${chunks[0].startMs}", chunks[0].startMs >= 30_000)
+        assertEquals(75_000L, chunks[0].endMs)
+        assertEquals(0, splitAll(FileSplitter(sr, 30_000, 60_000), silence(90_000)).size)
+    }
+
+    @Test
+    fun fileSplitterResumesFromOffset() {
+        val chunks = splitAll(FileSplitter(sr, 30_000, 60_000, startMs = 120_000), speech(10_000))
+        assertEquals(1, chunks.size)
+        assertEquals(120_000L, chunks[0].startMs)
+        assertEquals(130_000L, chunks[0].endMs)
+    }
+
+    private fun tone(rate: Int, channels: Int, hz: Double, ms: Int, amp: Float = 0.5f): FloatArray {
+        val frames = rate * ms / 1000
+        return FloatArray(frames * channels) { i -> (sin(2 * PI * hz * (i / channels) / rate) * amp).toFloat() }
+    }
+
+    private fun convert(conv: PcmConverter, input: FloatArray, channels: Int, block: Int = 1152): ShortArray {
+        val out = ArrayList<Short>()
+        var f = 0
+        val frames = input.size / channels
+        while (f < frames) {
+            val n = minOf(block, frames - f)
+            out.addAll(conv.process(input.copyOfRange(f * channels, (f + n) * channels), n).toList())
+            f += n
+        }
+        return out.toShortArray()
+    }
+
+    private fun rms(x: ShortArray, from: Int = 0): Double {
+        var sum = 0.0
+        for (i in from until x.size) sum += x[i].toDouble() * x[i]
+        return sqrt(sum / (x.size - from))
+    }
+
+    @Test
+    fun converterResamplesStereo48kTo16kMono() {
+        val out = convert(PcmConverter(48_000, 2), tone(48_000, 2, 440.0, 2_000), 2)
+        assertTrue("liczba próbek: ${out.size}", abs(out.size - 32_000) <= 2)
+        val expected = 0.5 * 32767 / sqrt(2.0)
+        assertTrue("głośność: ${rms(out, 800)}", abs(rms(out, 800) - expected) < expected * 0.05)
+    }
+
+    @Test
+    fun converterUpsamples8kAndHandles44k() {
+        val up = convert(PcmConverter(8_000, 1), tone(8_000, 1, 300.0, 1_000), 1, block = 160)
+        assertTrue("8 kHz: ${up.size}", abs(up.size - 16_000) <= 2)
+        val cd = convert(PcmConverter(44_100, 1), tone(44_100, 1, 1_000.0, 1_000), 1)
+        assertTrue("44,1 kHz: ${cd.size}", abs(cd.size - 16_000) <= 2)
+    }
+
+    @Test
+    fun converterFiltersOutHighFrequencies() {
+        // Ton 12 kHz nie mieści się w 16 kHz – bez filtra wróciłby jako zniekształcenie 4 kHz.
+        val out = convert(PcmConverter(48_000, 1), tone(48_000, 1, 12_000.0, 1_000), 1)
+        assertTrue("przeciek: ${rms(out, 800)}", rms(out, 800) < 0.5 * 32767 * 0.05)
     }
 }
