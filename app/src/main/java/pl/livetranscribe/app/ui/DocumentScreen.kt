@@ -66,6 +66,10 @@ fun DocumentScreen(
     }
 
     val live = rec.sessionId == id
+    val importing = s.status == SessionStatus.IMPORTING
+    val importProgress by vm.importProgress.collectAsStateWithLifecycle()
+    val importErrors by vm.importErrors.collectAsStateWithLifecycle()
+    val importError = importErrors[id]
     val pending = chunks.count { it.status == ChunkStatus.PENDING }
     val failed = chunks.count { it.status == ChunkStatus.FAILED }
     val text = remember(s.editedText, chunks, settings.timestamps, settings.speakers) {
@@ -83,7 +87,7 @@ fun DocumentScreen(
         if (!autoHandled) {
             autoHandled = true
             if (autoPdf) showPdfOptions = true
-            if (autoEdit && !live) vm.startEdit(id, text)
+            if (autoEdit && !live && !importing) vm.startEdit(id, text)
         }
     }
 
@@ -107,7 +111,7 @@ fun DocumentScreen(
                             scope.launch { snackbar.showSnackbar("Zapisano zmiany") }
                         }) { Text("ZAPISZ", fontWeight = FontWeight.Bold) }
                     } else {
-                        IconButton(onClick = { vm.startEdit(id, text) }, enabled = !live) {
+                        IconButton(onClick = { vm.startEdit(id, text) }, enabled = !live && !importing) {
                             Icon(Icons.Filled.Edit, contentDescription = "Edytuj tekst")
                         }
                         Box {
@@ -143,7 +147,7 @@ fun DocumentScreen(
                         if (pdfFile == null) {
                             Button(
                                 onClick = { showPdfOptions = true },
-                                enabled = !generating && !live,
+                                enabled = !generating && !live && !importing,
                                 modifier = Modifier.fillMaxWidth().height(58.dp),
                             ) {
                                 if (generating) {
@@ -218,7 +222,24 @@ fun DocumentScreen(
                     InfoBanner("Ten dokument jest właśnie nagrywany. Edycja i PDF będą dostępne po zakończeniu.")
                     Spacer(Modifier.height(8.dp))
                 }
-                if (pending > 0 && !live) {
+                if (importing) {
+                    val p = importProgress[id]
+                    InfoBanner(
+                        if (p == null) "Wczytuję plik nagrania…"
+                        else "Wczytuję plik nagrania – ${(p * 100).toInt()}%. Tekst pojawia się na bieżąco.",
+                    )
+                    if (p == null) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
+                    } else {
+                        LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (importError != null) {
+                    InfoBanner(importError, error = true, action = "OK", onAction = { vm.dismissImportError(id) })
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (pending > 0 && !live && (!importing || problem != null)) {
                     InfoBanner(
                         if (problem != null) "${problem} (w kolejce: $pending)" else "Kończę transkrypcję – pozostało fragmentów: $pending",
                         error = problem != null,
@@ -238,7 +259,7 @@ fun DocumentScreen(
                     Spacer(Modifier.height(8.dp))
                 }
                 Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(bottom = 16.dp)) {
-                    if (!live && (note != null || (s.status == SessionStatus.DONE && text.isNotBlank()))) {
+                    if (!live && !importing && (note != null || (s.status == SessionStatus.DONE && text.isNotBlank()))) {
                         NoteCard(
                             note = note,
                             progress = noteStep,

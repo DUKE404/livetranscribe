@@ -7,6 +7,7 @@ import pl.livetranscribe.app.engine.ChunkText
 import pl.livetranscribe.app.engine.LocalModel
 import pl.livetranscribe.app.engine.SegJson
 import pl.livetranscribe.app.engine.TextComposer
+import pl.livetranscribe.app.service.AudioImport
 import pl.livetranscribe.app.service.RecordingService
 import java.io.File
 
@@ -32,6 +33,7 @@ class Repository(
         session.editedText ?: compose(chunks, timestamps, speakers)
 
     suspend fun deleteSession(id: Long) {
+        AudioImport.cancel(context, id)
         val s = dao.session(id)
         s?.pdfPath?.let { File(it).delete() }
         audioDir(id).deleteRecursively()
@@ -40,6 +42,7 @@ class Repository(
     }
 
     suspend fun deleteHistory() {
+        AudioImport.cancelAll(context)
         dao.deleteAllSessions()
         File(context.filesDir, "audio").deleteRecursively()
         File(context.filesDir, "pdf").deleteRecursively()
@@ -67,6 +70,8 @@ class Repository(
                 dao.setStatus(s.id, SessionStatus.PROCESSING)
             }
         }
+        // Przerwane wczytywanie pliku: wznów (albo zamknij, gdy kopii pliku już nie ma).
+        AudioImport.recover(context)
         for (s in dao.allSessions()) {
             if (s.status == SessionStatus.PROCESSING && dao.pendingCount(s.id) == 0) {
                 dao.setStatus(s.id, SessionStatus.DONE)

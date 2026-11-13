@@ -13,7 +13,17 @@ mikrofon → RecordingService (usługa pierwszoplanowa)
          → zapis fragmentu na dysk + wpis w bazie Room (status PENDING)
          → TranscriptionQueue: silnik chmurowy (API zgodne z OpenAI) albo lokalny (Vosk)
          → tekst w bazie → ekran na żywo → edycja → PDF → pobranie / udostępnienie
+
+plik nagrania (wybór pliku albo „Udostępnij” z dyktafonu)
+         → AudioImport: kopia w aplikacji + sprawdzenie formatu → dokument IMPORTING
+         → ImportWorker (WorkManager, powiadomienie): AudioDecoder (MediaExtractor + MediaCodec)
+           → PcmConverter (16 kHz mono, filtr antyaliasingowy) → FileSplitter (fragmenty 1–2 min, cięcie w pauzach)
+         → ta sama kolejka TranscriptionQueue co nagrania na żywo
 ```
+
+- **Wczytywanie plików:** MP3, M4A/AAC, WAV, OGG/Opus, FLAC, AMR, 3GP i ścieżka dźwiękowa z MP4. Po przerwaniu
+  wczytywanie wznawia się od końca ostatniego zapisanego fragmentu. W wersji webowej dekoduje przeglądarka
+  (`decodeAudioData`), a podział robi ten sam algorytm (`FileSplitter` w `web/public/core.js`).
 
 - **Architektura:** MVVM, Kotlin, Jetpack Compose, Room, Foreground Service.
 - **Odporność:** każdy fragment jest najpierw zapisany, potem przetwarzany. Brak internetu, błąd serwera

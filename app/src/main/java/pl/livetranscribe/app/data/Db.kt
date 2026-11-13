@@ -16,6 +16,8 @@ object SessionStatus {
     const val RECORDING = "RECORDING"
     const val PAUSED = "PAUSED"
     const val PROCESSING = "PROCESSING"
+    /** Wczytywanie pliku nagrania (np. z dyktafonu) – fragmenty jeszcze powstają. */
+    const val IMPORTING = "IMPORTING"
     const val DONE = "DONE"
 }
 

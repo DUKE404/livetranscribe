@@ -168,6 +168,97 @@
     }
   }
 
+  /**
+   * Dzieli wczytany plik nagrania (Int16, 16 kHz, mono) na kolejne fragmenty do transkrypcji.
+   * Inaczej niż Chunker przy nagrywaniu na żywo, nic nie jest pomijane: fragmenty przylegają do siebie
+   * i obejmują całe nagranie. Cięcie wypada w najcichszym miejscu (pauzie 300 ms) między minChunkMs
+   * a maxChunkMs. Pomijane są tylko fragmenty bez dźwięku (cisza), ale czas płynie dalej.
+   */
+  class FileSplitter {
+    constructor({ sampleRate = SAMPLE_RATE, minChunkMs = 60000, maxChunkMs = 120000, startMs = 0 } = {}) {
+      this.sr = sampleRate;
+      this.frameLen = sampleRate / 50; // 20 ms
+      this.minFrames = Math.floor(minChunkMs / 20);
+      this.maxSamples = Math.floor(maxChunkMs / 20) * this.frameLen;
+      this.buf = new Int16Array(this.maxSamples);
+      this.size = 0;
+      this.startSample = Math.floor(startMs * sampleRate / 1000);
+    }
+
+    /** Czas (ms) od początku nagrania do końca przyjętych próbek. */
+    get positionMs() { return Math.floor((this.startSample + this.size) * 1000 / this.sr); }
+
+    feed(samples) {
+      const out = [];
+      let i = 0;
+      while (i < samples.length) {
+        const n = Math.min(this.maxSamples - this.size, samples.length - i);
+        this.buf.set(samples.subarray(i, i + n), this.size);
+        this.size += n;
+        i += n;
+        if (this.size === this.maxSamples) this._cut(out);
+      }
+      return out;
+    }
+
+    flush() {
+      const out = [];
+      if (this.size > 0) this._emit(this.size, out);
+      return out[0] || null;
+    }
+
+    _rms(from) {
+      let sum = 0;
+      for (let i = from; i < from + this.frameLen; i++) sum += this.buf[i] * this.buf[i];
+      return Math.sqrt(sum / this.frameLen);
+    }
+
+    _cut(out) {
+      const frames = Math.floor(this.size / this.frameLen);
+      const rms = new Float32Array(frames);
+      for (let f = 0; f < frames; f++) rms[f] = this._rms(f * this.frameLen);
+      let best = frames;
+      let bestSum = Infinity;
+      for (let c = Math.max(this.minFrames, 1); c < frames; c++) {
+        let sum = 0;
+        for (let k = Math.max(0, c - 7); k <= Math.min(frames - 1, c + 7); k++) sum += rms[k];
+        if (sum < bestSum) { bestSum = sum; best = c; }
+      }
+      this._emit(best * this.frameLen, out);
+    }
+
+    _emit(cut, out) {
+      const startMs = Math.floor(this.startSample * 1000 / this.sr);
+      const endMs = Math.floor((this.startSample + cut) * 1000 / this.sr);
+      if (this._hasSound(cut)) out.push({ pcm: this.buf.slice(0, cut), startMs, endMs });
+      this.buf.copyWithin(0, cut, this.size);
+      this.size -= cut;
+      this.startSample += cut;
+    }
+
+    _hasSound(len) {
+      const frames = Math.floor(len / this.frameLen);
+      if (!frames) return false;
+      const rms = new Float32Array(frames);
+      for (let f = 0; f < frames; f++) rms[f] = this._rms(f * this.frameLen);
+      const floor = Float32Array.from(rms).sort()[Math.floor(frames / 10)];
+      const threshold = Math.max(20, floor * 2);
+      let loud = 0;
+      for (const e of rms) if (e > threshold) loud++;
+      return loud >= Math.min(25, Math.max(1, Math.floor(frames / 4)));
+    }
+  }
+
+  /** Float32 (-1..1) -> Int16. */
+  function toInt16(f32) {
+    const out = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const v = Math.max(-1, Math.min(1, f32[i]));
+      out[i] = v < 0 ? v * 32768 : v * 32767;
+    }
+    return out;
+  }
+
   /** Przepróbkowanie Float32 (np. 48 kHz) -> Int16 16 kHz, z uśrednianiem (filtr antyaliasingowy). */
   class Resampler {
     constructor(fromRate, toRate = SAMPLE_RATE) {
@@ -280,7 +371,7 @@
     return out.trim();
   }
 
-  const api = { SAMPLE_RATE, Chunker, Resampler, wavBytes, formatTime, compose, clean, speakerLabel, buildPrompt };
+  const api = { SAMPLE_RATE, Chunker, FileSplitter, toInt16, Resampler, wavBytes, formatTime, compose, clean, speakerLabel, buildPrompt };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LTCore = api;
 })(typeof self !== 'undefined' ? self : this);

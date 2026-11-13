@@ -2,16 +2,20 @@ package pl.livetranscribe.app.ui
 
 import android.app.Application
 import android.content.Context
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -26,6 +30,7 @@ import pl.livetranscribe.app.engine.MeetingNote
 import pl.livetranscribe.app.engine.Summarizer
 import pl.livetranscribe.app.pdf.PdfActions
 import pl.livetranscribe.app.pdf.PdfGenerator
+import pl.livetranscribe.app.service.AudioImport
 import pl.livetranscribe.app.service.RecState
 import pl.livetranscribe.app.service.RecStatus
 import pl.livetranscribe.app.service.RecordingBus
@@ -114,6 +119,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     val isRecordingActive: Boolean get() = rec.value.status != RecStatus.IDLE
+
+    // ---------- wczytywanie pliku nagrania ----------
+
+    sealed interface ImportResult {
+        data class Opened(val id: Long) : ImportResult
+        data class Failed(val message: String) : ImportResult
+    }
+
+    /** Trwa kopiowanie i sprawdzanie wybranego pliku (przed utworzeniem dokumentu). */
+    var importBusy by mutableStateOf(false)
+        private set
+
+    private val importChannel = Channel<ImportResult>(Channel.BUFFERED)
+    val importResults: Flow<ImportResult> = importChannel.receiveAsFlow()
+
+    val importProgress: StateFlow<Map<Long, Float>> = AudioImport.progress
+    val importErrors: StateFlow<Map<Long, String>> = AudioImport.errors
+
+    /** Wczytuje plik nagrania (np. z dyktafonu): po sprawdzeniu powstaje dokument, transkrypcja idzie w tle. */
+    fun importAudio(uri: Uri) {
+        if (importBusy) return
+        importBusy = true
+        viewModelScope.launch {
+            val result = try {
+                ImportResult.Opened(AudioImport.start(app, uri))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: pl.livetranscribe.app.audio.UnsupportedAudioException) {
+                ImportResult.Failed(e.message ?: "Nie udało się wczytać pliku.")
+            } catch (e: Exception) {
+                ImportResult.Failed("Nie udało się wczytać pliku: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                importBusy = false
+            }
+            importChannel.send(result)
+        }
+    }
+
+    fun dismissImportError(id: Long) = AudioImport.errors.update { it - id }
 
     // ---------- dokumenty ----------
 

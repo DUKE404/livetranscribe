@@ -91,6 +91,7 @@ fun statusLabel(status: String): String = when (status) {
     SessionStatus.RECORDING -> "Nagrywanie"
     SessionStatus.PAUSED -> "Pauza"
     SessionStatus.PROCESSING -> "Przetwarzanie"
+    SessionStatus.IMPORTING -> "Wczytywanie"
     else -> "Gotowa"
 }
 
