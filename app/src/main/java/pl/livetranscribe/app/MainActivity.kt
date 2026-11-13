@@ -50,6 +50,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         // Po obrocie ekranu ten sam intent nie może wczytać pliku drugi raz.
         if (savedInstanceState == null) handleIntent(intent)
+        // Powitanie przy każdym otwarciu aplikacji z ikony.
+        if (savedInstanceState == null && intent?.action == Intent.ACTION_MAIN) {
+            Toast.makeText(this, "Miłego dnia maluszku\u00a0❤️", Toast.LENGTH_LONG).show()
+        }
         setContent {
             val vm: MainViewModel = viewModel()
             val settings by vm.settings.collectAsStateWithLifecycle()
