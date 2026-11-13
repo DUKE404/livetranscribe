@@ -203,6 +203,7 @@ object AudioImport {
         val audioDir = app.repo.audioDir(sessionId).apply { mkdirs() }
         val cloud = session.engine != "local"
         var lastUpdate = 0L
+        var lastNotice = 0L
 
         suspend fun save(c: Chunker.Chunk) {
             // Dokument usunięty w trakcie: przerwij.
@@ -236,9 +237,13 @@ object AudioImport {
                 src,
                 onProgress = { p ->
                     val now = SystemClock.elapsedRealtime()
-                    if (now - lastUpdate >= 700 || p >= 1f) {
+                    if (now - lastUpdate >= 500 || p >= 1f) {
                         lastUpdate = now
                         progress.update { it + (sessionId to p) }
+                    }
+                    // Powiadomienie rzadziej – każda zmiana to wywołanie systemu.
+                    if (now - lastNotice >= 2_000) {
+                        lastNotice = now
                         worker.showProgress(session.title, p)
                     }
                 },
