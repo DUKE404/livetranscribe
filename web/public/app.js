@@ -1455,7 +1455,7 @@
         <div class="section">Transkrypcja</div>
         <div class="field"><label>Język transkrypcji</label>${sel('language', [['pl', 'Polski'], ['auto', 'Wykrywaj automatycznie'], ['en', 'Angielski'], ['de', 'Niemiecki'], ['uk', 'Ukraiński'], ['fr', 'Francuski'], ['es', 'Hiszpański']])}</div>
         <div class="field"><label>Silnik transkrypcji</label>${sel('provider', [['groq', 'Groq – Whisper large-v3 (ma darmowy plan)'], ['gemini', 'Google Gemini – darmowy, rozpoznaje rozmówców'], ['openai', 'OpenAI – płatny, rozpoznaje rozmówców']], busy)}
-          ${prov === 'gemini' ? '<small class="muted">Gemini zapisuje też wtrącenia i oznacza, kto mówi. Tekst pojawia się co 30–60 s. W darmowym planie Google może wykorzystywać przesłane nagrania do ulepszania swoich usług i ma dzienny limit zapytań.</small>' : ''}
+          ${prov === 'gemini' ? '<small class="muted">Gemini zapisuje też wtrącenia i oznacza, kto mówi. Tekst pojawia się co 30–60 s. Darmowy plan ma dzienny limit (obecnie ok. 500 fragmentów, czyli kilka godzin nagrań – sprawdzisz go na aistudio.google.com/rate-limit). Google może wykorzystywać przesłane w nim nagrania do ulepszania swoich usług.</small>' : ''}
           <small class="muted">Dźwięk jest wysyłany szyfrowanym połączeniem (HTTPS) przez serwer aplikacji do ${esc(providerHost())}. Serwer niczego nie zapisuje.</small></div>
         <div class="field"><label>Jakość rozpoznawania</label>${sel('quality', [['fast', 'Szybka – tekst pojawia się najszybciej'], ['balanced', 'Zrównoważona'], ['accurate', 'Dokładna – dłuższe fragmenty, tekst z opóźnieniem']], busy)}</div>
 

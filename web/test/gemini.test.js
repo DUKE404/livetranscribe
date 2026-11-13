@@ -20,7 +20,7 @@ test('Gemini: rozmówcy i wtrącenie, kontekst w poleceniu, zapasowy model', asy
   const out = await transcribe('KLUCZ', Buffer.from('RIFF....WAVE'), { language: 'pl', context: 'A: Dzień dobry.', glossary: 'Kowalczyk', fetchImpl });
   assert.strictEqual(calls.length, 2, 'po 404 drugi model z listy');
   assert.match(calls[1].url, /\/openai\/chat\/completions$/);
-  assert.strictEqual(calls[1].body.model, 'gemini-2.5-flash');
+  assert.strictEqual(calls[1].body.model, 'gemini-2.5-flash-lite');
   assert.strictEqual(calls[1].key, 'Bearer KLUCZ');
   const parts = calls[1].body.messages[0].content;
   assert.match(parts[0].text, /A: Dzień dobry\./);
@@ -32,7 +32,7 @@ test('Gemini: rozmówcy i wtrącenie, kontekst w poleceniu, zapasowy model', asy
 
 test('Gemini: błędy klucza i limitu', async () => {
   await assert.rejects(transcribe('X', Buffer.from('a'), { fetchImpl: async () => resp(400, JSON.stringify({ error: { message: 'API key not valid. Please pass a valid API key.' } })) }), (e) => e.status === 401);
-  await assert.rejects(transcribe('X', Buffer.from('a'), { fetchImpl: async () => resp(429, '{}') }), (e) => e.status === 429);
+  await assert.rejects(transcribe('X', Buffer.from('a'), { fetchImpl: async () => resp(429, '{}') }), (e) => e.status === 429 && /minutę/.test(e.message));
   await assert.rejects(transcribe('X', Buffer.from('a'), { fetchImpl: async () => resp(503, '{}') }), (e) => e.status === 502);
 });
 
@@ -56,4 +56,21 @@ test('Gemini: model bez wymuszonego formatu – ponowienie bez response_format',
   assert.strictEqual(bodies[1].model, bodies[0].model, 'ten sam model');
   assert.strictEqual(bodies[1].response_format, undefined);
   assert.strictEqual(out.text, 'Dzień dobry.');
+});
+
+test('Gemini: dzienny limit modelu – przejście na następny model, na końcu czytelny komunikat', async () => {
+  const models = [];
+  const daily = JSON.stringify([{ error: { code: 429, message: 'You exceeded your current quota', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } }]);
+  const out = await transcribe('K', Buffer.from('a'), {
+    fetchImpl: async (url, opt) => {
+      const b = JSON.parse(opt.body);
+      models.push(b.model);
+      if (models.length === 1) return resp(429, daily);
+      return resp(200, JSON.stringify({ choices: [{ message: { content: '{"segments":[{"speaker":"A","text":"Tak."}]}' } }] }));
+    },
+  });
+  assert.strictEqual(models[0], 'gemini-flash-lite-latest');
+  assert.notStrictEqual(models[1], models[0]);
+  assert.strictEqual(out.text, 'Tak.');
+  await assert.rejects(transcribe('K', Buffer.from('a'), { fetchImpl: async () => resp(429, daily) }), (e) => e.status === 429 && /dzienny limit/.test(e.message));
 });

@@ -68,7 +68,8 @@ data class AppSettings(
     val summaryModel: String
         get() = when (provider) {
             "openai" -> "gpt-5-mini"
-            "gemini" -> pl.livetranscribe.app.engine.GeminiEngine.MODELS.first()
+            // Notatka: kilka zapytań, liczy się jakość – zwykły Flash (transkrypcja idzie na Flash-Lite z większym limitem).
+            "gemini" -> "gemini-flash-latest"
             else -> "openai/gpt-oss-120b"
         }
 

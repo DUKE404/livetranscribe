@@ -98,7 +98,8 @@ fun SettingsScreen(vm: MainViewModel, onTab: (String) -> Unit) {
                 if (s.provider == "gemini") {
                     Note(
                         "Gemini zapisuje też wtrącenia i oznacza, kto mówi. Tekst pojawia się co 30–60 s. " +
-                            "W darmowym planie Google może wykorzystywać przesłane nagrania do ulepszania swoich usług i ma dzienny limit zapytań.",
+                            "Darmowy plan ma dzienny limit (obecnie ok. 500 fragmentów, czyli kilka godzin nagrań – sprawdzisz go na aistudio.google.com/rate-limit). " +
+                            "Google może wykorzystywać przesłane w nim nagrania do ulepszania swoich usług.",
                     )
                 }
                 ApiKeyField(vm, s.provider, snackbar)

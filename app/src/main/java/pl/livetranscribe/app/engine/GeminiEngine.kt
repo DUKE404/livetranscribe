@@ -69,6 +69,13 @@ class GeminiEngine(
                 (code == 400 && msg.contains("model", true) && (msg.contains("not found", true) || msg.contains("not supported", true)))
             when {
                 modelMissing -> { last = msg; m++ } // model wycofany lub niedostępny – następny z listy
+                code == 429 && DAILY.containsMatchIn(text) && m < models.size - 1 -> { last = msg; m++ } // dzienny limit modelu
+                code == 429 && DAILY.containsMatchIn(text) -> throw ApiException(
+                    429,
+                    "Wyczerpany dzienny limit darmowego planu Gemini. Nagranie czeka w telefonie i dokończy się po odnowieniu " +
+                        "limitu (następnego dnia) – albo przełącz dostawcę na Groq w Ustawieniach.",
+                )
+                code == 429 -> throw ApiException(429, "Limit zapytań Gemini na minutę – ponowię za chwilę.")
                 code == 401 || code == 403 || (code == 400 && msg.contains("api key", true)) ->
                     throw AuthException("Google odrzucił klucz API. Sprawdź go w Ustawieniach.")
                 // Model nie przyjmuje wymuszonego formatu – ten sam model jeszcze raz, JSON tylko z polecenia.
@@ -102,8 +109,13 @@ class GeminiEngine(
     companion object {
         /** Adres Google zgodny z OpenAI: transkrypcja (input_audio), notatki AI i sprawdzanie klucza. */
         const val OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
-        /** Alias „latest” wskazuje bieżący model Flash; pozostałe to zapas, gdyby alias był niedostępny. */
-        val MODELS = listOf("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash")
+        /**
+         * Najpierw Flash-Lite: w darmowym planie ma wielokrotnie większy dzienny limit (ok. 500 zapytań wobec
+         * ok. 20 dla Flash, stan na jesień 2026). Każdy model ma osobny limit – po wyczerpaniu dziennego
+         * przechodzimy do następnego.
+         */
+        val MODELS = listOf("gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-2.5-flash")
+        private val DAILY = Regex("PerDay|per[ _-]?day|daily", RegexOption.IGNORE_CASE)
 
         private val LANGS = mapOf("pl" to "polski", "en" to "angielski", "de" to "niemiecki", "uk" to "ukraiński", "fr" to "francuski", "es" to "hiszpański")
 
