@@ -95,6 +95,49 @@ object TextComposer {
     }
 
     /** Typowe „halucynacje” modeli Whisper na ciszy lub szumie. */
+    /**
+     * Krótkie zdania, które Whisper „dopowiada” na ciszy lub szumie (najczęstsze w napisach filmów,
+     * na których był uczony). Odrzucane tylko wtedy, gdy model sam nie jest pewny, że słyszy mowę.
+     */
+    private val hallucinations = setOf(
+        "dziękuję za uwagę", "dzięki za uwagę", "dziękujemy za uwagę", "dziękuję", "dzięki", "dziękuję bardzo",
+        "dzięki wielkie", "bardzo dziękuję", "dziękujemy", "do zobaczenia", "do usłyszenia", "do widzenia",
+        "dzień dobry", "cześć", "hej", "pa", "pa pa", "dobranoc", "następna stacja", "muzyka", "oklaski",
+        "koniec", "to wszystko", "subskrybuj", "zapraszam", "dziękuję za obejrzenie", "dziękuję za oglądanie",
+        "thank you", "thanks for watching", "bye",
+    )
+    private val hallucinationPrefixes = listOf("napisy", "tłumaczenie", "zdjęcia i montaż", "transkrypcja", "subtitles")
+
+    private fun normalizeWords(t: String): String =
+        t.lowercase().replace(Regex("[^\\p{L}\\p{N}\\s]"), " ").replace(Regex("\\s+"), " ").trim()
+
+    /**
+     * Czy odcinek z odpowiedzi Whisper (verbose_json) to najpewniej zmyślenie, a nie mowa.
+     * [startS]/[endS] w sekundach; brakujące pola (inne modele) nie wpływają na ocenę.
+     */
+    fun isHallucination(
+        text: String,
+        startS: Double,
+        endS: Double,
+        noSpeechProb: Double,
+        avgLogprob: Double,
+        compressionRatio: Double,
+    ): Boolean {
+        val norm = normalizeWords(text)
+        if (norm.isEmpty()) return true
+        if (compressionRatio > 2.4) return true                 // zapętlone powtórzenia
+        if (noSpeechProb > 0.6 && avgLogprob < -0.7) return true // model sam ocenia, że to nie mowa
+        if (noSpeechProb > 0.9 && avgLogprob < -0.3) return true
+        val known = norm in hallucinations || hallucinationPrefixes.any { norm.startsWith(it) }
+        if (known) {
+            val dur = (endS - startS).coerceAtLeast(0.0)
+            val words = norm.split(' ').size
+            // Prawdziwe „dzień dobry” model słyszy wyraźnie i krótko; zmyślone – niepewnie albo „rozciągnięte” na ciszę.
+            if (noSpeechProb > 0.1 || avgLogprob < -0.45 || (dur > 4 && words / dur < 0.6)) return true
+        }
+        return false
+    }
+
     private val junk = listOf(
         "amara.org", "napisy stworzone przez", "napisy wykonane przez", "subtitles by",
         "zeoranger", "napisy: ", "transkrypcja: ", "thanks for watching", "dziękuję za oglądanie",
@@ -116,6 +159,8 @@ object TextComposer {
 
     fun clean(text: String): String {
         val t = text.trim().replace(Regex("[ \\t]+"), " ")
+        // Same kropki, nuty, myślniki – brak słów.
+        if (t.none { it.isLetterOrDigit() }) return ""
         if (t.length < 90) {
             val low = t.lowercase()
             if (junk.any { low.contains(it) }) return ""

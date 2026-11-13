@@ -236,4 +236,25 @@ class LogicTest {
         val out = convert(PcmConverter(48_000, 1), tone(48_000, 1, 12_000.0, 1_000), 1)
         assertTrue("przeciek: ${rms(out, 800)}", rms(out, 800) < 0.5 * 32767 * 0.05)
     }
+
+    @Test
+    fun hallucinationFilterDropsInventedPhrasesButKeepsSpeech() {
+        fun h(text: String, start: Double, end: Double, ns: Double, lp: Double, cr: Double = 1.2) =
+            TextComposer.isHallucination(text, start, end, ns, lp, cr)
+        // Zmyślenia z ciszy / szumu (jak na zgłoszonym PDF)
+        assertTrue(h("Dzięki za uwagę!", 0.0, 10.0, 0.45, -0.6))
+        assertTrue(h("Następna stacja.", 0.0, 11.0, 0.3, -0.5))
+        assertTrue(h("Dzień dobry.", 0.0, 14.0, 0.05, -0.3))      // 2 słowa „rozciągnięte” na 14 s ciszy
+        assertTrue(h("...", 0.0, 12.0, 0.0, -0.1))
+        assertTrue(h("Napisy wykonane przez społeczność", 0.0, 5.0, 0.2, -0.4))
+        assertTrue(h("Omówiliśmy budżet na przyszły rok.", 0.0, 8.0, 0.7, -0.9))
+        assertTrue(h("tak tak tak tak tak tak tak tak tak tak", 0.0, 8.0, 0.0, -0.2, 3.1))
+        // Prawdziwa mowa zostaje
+        assertTrue(!h("Dzień dobry.", 0.0, 1.2, 0.02, -0.2))
+        assertTrue(!h("Dziękuję za uwagę, to wszystko na dziś.", 0.0, 3.0, 0.01, -0.25))
+        assertTrue(!h("Omówiliśmy budżet.", 0.0, 2.0, 0.7, -0.3))
+        assertTrue(!h("Dzień dobry", 0.0, 1.0, 0.0, 0.0))          // modele bez tych pól (OpenAI)
+        assertEquals("", TextComposer.clean("…"))
+        assertEquals("Tak.", TextComposer.clean("Tak."))
+    }
 }

@@ -124,18 +124,32 @@ class CloudEngine(
     private fun parse(json: String): TranscribeResult {
         val o = try { JSONObject(json) } catch (e: Exception) { return TranscribeResult(json.trim(), emptyList()) }
         val segs = ArrayList<Seg>()
+        var dropped = 0
         val arr = o.optJSONArray("segments")
         if (arr != null) {
             for (i in 0 until arr.length()) {
                 val s = arr.optJSONObject(i) ?: continue
                 val t = s.optString("text").trim()
                 if (t.isEmpty()) continue
+                val start = s.optDouble("start", 0.0)
+                val end = s.optDouble("end", 0.0)
+                // Odcinki z ciszy lub szumu, które Whisper „dopowiedział” (np. „Dziękuję za uwagę”), są pomijane.
+                if (TextComposer.isHallucination(
+                        t, start, end,
+                        s.optDouble("no_speech_prob", 0.0).takeIf { !it.isNaN() } ?: 0.0,
+                        s.optDouble("avg_logprob", 0.0).takeIf { !it.isNaN() } ?: 0.0,
+                        s.optDouble("compression_ratio", 0.0).takeIf { !it.isNaN() } ?: 0.0,
+                    )
+                ) {
+                    dropped++
+                    continue
+                }
                 val speaker = if (s.has("speaker") && !s.isNull("speaker")) s.optString("speaker") else null
-                segs.add(Seg((s.optDouble("start", 0.0) * 1000).toLong(), (s.optDouble("end", 0.0) * 1000).toLong(), speaker, t))
+                segs.add(Seg((start * 1000).toLong(), (end * 1000).toLong(), speaker, t))
             }
         }
         var text = o.optString("text").trim()
-        if (text.isEmpty() && segs.isNotEmpty()) text = segs.joinToString(" ") { it.text }
+        if (dropped > 0 || (text.isEmpty() && segs.isNotEmpty())) text = segs.joinToString(" ") { it.text }
         return TranscribeResult(text, segs)
     }
 

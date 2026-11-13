@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const { Chunker, FileSplitter, toInt16, Resampler, wavBytes, compose, clean } = require('../public/core.js');
+const { Chunker, FileSplitter, toInt16, Resampler, wavBytes, compose, clean, isHallucination } = require('../public/core.js');
 
 const SR = 16000;
 let seed = 7;
@@ -136,4 +136,20 @@ test('plik: cisza pominięta, czas płynie', () => {
 
 test('Float32 -> Int16', () => {
   assert.deepStrictEqual(Array.from(toInt16(new Float32Array([0, 1, -1, 2, -0.5]))), [0, 32767, -32768, 32767, -16384]);
+});
+
+test('filtr zmyśleń Whisper: odrzuca zmyślenia, zostawia mowę', () => {
+  const h = (text, start, end, ns, lp, cr = 1.2) => isHallucination({ text, start, end, no_speech_prob: ns, avg_logprob: lp, compression_ratio: cr });
+  assert.ok(h('Dzięki za uwagę!', 0, 10, 0.45, -0.6));
+  assert.ok(h('Następna stacja.', 0, 11, 0.3, -0.5));
+  assert.ok(h('Dzień dobry.', 0, 14, 0.05, -0.3));
+  assert.ok(h('...', 0, 12, 0, -0.1));
+  assert.ok(h('Omówiliśmy budżet na przyszły rok.', 0, 8, 0.7, -0.9));
+  assert.ok(h('tak tak tak tak tak tak tak tak', 0, 8, 0, -0.2, 3.1));
+  assert.ok(!h('Dzień dobry.', 0, 1.2, 0.02, -0.2));
+  assert.ok(!h('Dziękuję za uwagę, to wszystko na dziś.', 0, 3, 0.01, -0.25));
+  assert.ok(!h('Omówiliśmy budżet.', 0, 2, 0.7, -0.3));
+  assert.ok(!isHallucination({ text: 'Dzień dobry', start: 0, end: 1 }));
+  assert.strictEqual(clean('…'), '');
+  assert.strictEqual(clean('Tak.'), 'Tak.');
 });
