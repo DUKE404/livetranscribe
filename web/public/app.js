@@ -36,6 +36,10 @@
   // Nazwy plików bez polskich znaków – część przeglądarek i aplikacji źle je obsługuje.
   const safeName = (t) => (String(t || '').trim().replace(/[łŁ]/g, (c) => (c === 'ł' ? 'l' : 'L')).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, '_').replace(/^[_.]+|[_.]+$/g, '').slice(0, 80) || 'Transkrypcja');
 
+  // iPhone/iPad (iPadOS przedstawia się jak Mac z ekranem dotykowym) i Safari – wszystkie przeglądarki na iOS to WebKit.
+  const IS_IOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const IS_SAFARI = IS_IOS || (/safari/i.test(navigator.userAgent) && !/chrome|chromium|crios|fxios|edg|android/i.test(navigator.userAgent));
+
   const bus = new EventTarget();
   const emit = (type, detail) => bus.dispatchEvent(new CustomEvent(type, { detail }));
 
@@ -53,7 +57,7 @@
   // ======================================================================
   const DEFAULTS = {
     language: 'pl', provider: 'groq', quality: 'balanced', autosave: true, timestamps: false, speakers: false,
-    pdfFontSize: 'medium', pdfHeader: true, theme: 'system', keepAudio: false, keepAwake: false,
+    pdfFontSize: 'medium', pdfHeader: true, theme: 'system', keepAudio: false, keepAwake: IS_IOS,
     glossary: '', consentShown: false,
   };
   function loadSettings() {
@@ -315,7 +319,7 @@
 
     async start() {
       if (this.status !== 'idle') return;
-      this.set({ status: 'starting', error: null });
+      this.set({ status: 'starting', error: null, wakeLockFailed: false });
       try {
         await this.openMic();
       } catch (e) {
@@ -342,8 +346,11 @@
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      const AC = window.AudioContext || window.webkitAudioContext;
       let ctx;
-      try { ctx = new AudioContext({ sampleRate: 16000, latencyHint: 'playback' }); } catch (_) { ctx = new AudioContext(); }
+      // Safari źle łączy mikrofon z kontekstem o innej częstotliwości niż sprzętowa – tam przepróbkowujemy sami.
+      if (IS_SAFARI) ctx = new AC();
+      else try { ctx = new AC({ sampleRate: 16000, latencyHint: 'playback' }); } catch (_) { ctx = new AC(); }
       const src = ctx.createMediaStreamSource(stream);
       const sink = ctx.createGain();
       sink.gain.value = 0;
@@ -360,7 +367,8 @@
       }
       src.connect(node);
       node.connect(sink);
-      ctx.onstatechange = () => { if (ctx.state === 'suspended' && this.status === 'recording') ctx.resume().catch(() => {}); };
+      // Safari po rozmowie telefonicznej lub Siri przechodzi w stan „interrupted”.
+      ctx.onstatechange = () => { if ((ctx.state === 'suspended' || ctx.state === 'interrupted') && this.status === 'recording') ctx.resume().catch(() => {}); };
       if (ctx.state === 'suspended') await ctx.resume();
       stream.getAudioTracks().forEach((t) => {
         t.onended = () => { if (this.status === 'recording') this.micLost(); };
@@ -469,14 +477,20 @@
       }
       const pend = (await db.chunks(sid)).some((c) => c.status === 'PENDING');
       await db.patchSession(sid, { status: pend ? 'PROCESSING' : 'DONE', durationMs: this.elapsedMs });
+      // Ostatni fragment mógł zostać przetworzony w trakcie kończenia – wtedy nikt inny nie zamknie dokumentu.
+      await closeIfDone(sid);
       this.set({ status: 'idle', sessionId: 0, chunker: null });
       queue.kick();
       return sid;
     },
 
     async applyWakeLock() {
-      if (!settings.keepAwake || !('wakeLock' in navigator) || this.status !== 'recording') return;
-      try { this.wakeLock = await navigator.wakeLock.request('screen'); } catch (_) { /* */ }
+      if (!settings.keepAwake || this.status !== 'recording') return;
+      let ok = false;
+      if ('wakeLock' in navigator) {
+        try { this.wakeLock = await navigator.wakeLock.request('screen'); ok = true; } catch (_) { /* */ }
+      }
+      if (!ok && document.visibilityState === 'visible') this.set({ wakeLockFailed: true });
     },
     releaseWakeLock() {
       try { if (this.wakeLock) this.wakeLock.release(); } catch (_) { /* */ }
@@ -495,9 +509,29 @@
     return 'Nie udało się włączyć mikrofonu: ' + ((e && e.message) || n || 'nieznany błąd');
   }
 
+  // Ile nagrania przepadło, gdy aplikacja była w tle (iOS wyłącza wtedy mikrofon stronom internetowym).
+  let hiddenAt = 0;
+  let elapsedAtHide = 0;
   document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      hiddenAt = rec.status === 'recording' ? Date.now() : 0;
+      elapsedAtHide = rec.elapsedMs;
+      return;
+    }
+    if (hiddenAt && rec.status === 'recording') {
+      const away = Date.now() - hiddenAt;
+      const startElapsed = elapsedAtHide;
+      hiddenAt = 0;
+      setTimeout(() => {
+        if (rec.status !== 'recording') return;
+        const lost = away - (rec.elapsedMs - startElapsed);
+        if (lost > 3000) {
+          rec.set({ error: `Telefon wyłączył mikrofon na ok. ${Math.round(lost / 1000)} s, gdy aplikacja była w tle lub ekran był zablokowany – ta część rozmowy nie została nagrana. Nagrywanie trwa dalej.` + (IS_IOS ? ' Na iPhonie trzymaj aplikację otwartą przy włączonym ekranie.' : '') });
+        }
+      }, 1500);
+    }
     if (document.visibilityState === 'visible') {
-      if (rec.ctx && rec.ctx.state === 'suspended' && rec.status === 'recording') rec.ctx.resume().catch(() => {});
+      if (rec.ctx && (rec.ctx.state === 'suspended' || rec.ctx.state === 'interrupted') && rec.status === 'recording') rec.ctx.resume().catch(() => {});
       if (rec.status === 'recording' && settings.keepAwake && !rec.wakeLock) rec.applyWakeLock();
       queue.kick();
     }
@@ -557,6 +591,20 @@
     return () => { try { d.close(); } catch (_) { /* */ } d.remove(); };
   }
 
+  /** Czas trwania nagrania z nagłówka pliku (bez dekodowania) albo null, gdy przeglądarka go nie zna. */
+  function mediaDuration(file) {
+    return new Promise((resolve) => {
+      let url = '';
+      const a = document.createElement('audio');
+      const done = (v) => { clearTimeout(t); a.removeAttribute('src'); try { a.load(); } catch (_) { /* */ } if (url) URL.revokeObjectURL(url); resolve(v); };
+      const t = setTimeout(() => done(null), 6000);
+      a.preload = 'metadata';
+      a.onloadedmetadata = () => done(Number.isFinite(a.duration) && a.duration > 0 ? a.duration : null);
+      a.onerror = () => done(null);
+      try { url = URL.createObjectURL(file); a.src = url; } catch (_) { done(null); }
+    });
+  }
+
   /** Dekoduje plik – przeglądarka od razu zamienia go na 16 kHz (mniej pamięci). */
   async function decodeFile(arrayBuffer) {
     const Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -578,10 +626,15 @@
     if (file.size > MAX_IMPORT_BYTES) {
       throw new Error(`Plik jest za duży (${fmtBytes(file.size)}). W przeglądarce można wczytać do 400 MB – dłuższe nagrania wczytaj w aplikacji na Androida.`);
     }
+    const seconds = await mediaDuration(file);
+    const maxH = IS_IOS ? 2 : 3;
+    if (seconds && seconds > maxH * 3600) {
+      throw new Error(`Nagranie trwa ${formatTime(seconds * 1000)} – w przeglądarce${IS_IOS ? ' na iPhonie' : ''} można wczytać naraz do ${maxH} godzin (więcej nie zmieści się w pamięci). Podziel je na części i wczytaj osobno${IS_IOS ? '' : ' albo użyj aplikacji na Androida'}.`);
+    }
     let audio;
     const close = busyDlg('Odczytuję plik nagrania… Przy długich nagraniach może to potrwać do minuty.');
     try {
-      audio = await decodeFile(await file.arrayBuffer());
+      audio = await decodeFile(await (file.arrayBuffer ? file.arrayBuffer() : new Response(file).arrayBuffer()));
     } catch (e) {
       throw new Error('Nie udało się odczytać pliku. To nie jest nagranie, plik jest uszkodzony albo ta przeglądarka nie obsługuje jego formatu (spróbuj MP3, M4A lub WAV). Bardzo długie nagrania mogą nie zmieścić się w pamięci – wtedy użyj aplikacji na Androida.');
     } finally {
@@ -732,8 +785,28 @@
   function openPdf(pdf) {
     const url = URL.createObjectURL(pdf.blob);
     const w = window.open(url, '_blank');
-    if (!w) downloadBlob(pdf.blob, pdf.name);
+    if (!w) {
+      if (IS_IOS) saveFiles([new File([pdf.blob], pdf.name, { type: 'application/pdf' })]);
+      else downloadBlob(pdf.blob, pdf.name);
+    }
     setTimeout(() => URL.revokeObjectURL(url), 120000);
+  }
+
+  /**
+   * Zapis plików w telefonie. Na iPhonie link do pobrania w aplikacji z ekranu początkowego potrafi otworzyć plik
+   * bez możliwości powrotu – dlatego otwieramy arkusz udostępniania z opcją „Zachowaj w Plikach”.
+   */
+  async function saveFiles(files) {
+    if (IS_IOS && navigator.canShare && navigator.canShare({ files })) {
+      try {
+        await navigator.share({ files });
+        return 'share';
+      } catch (e) {
+        if (e && e.name === 'AbortError') return 'cancel';
+      }
+    }
+    files.forEach((f, i) => setTimeout(() => downloadBlob(f, f.name), i * 400));
+    return 'download';
   }
 
   // ======================================================================
@@ -815,7 +888,7 @@
   // ======================================================================
   let installEvent = null;
   const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isIOS = () => IS_IOS;
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; emit('install'); });
   window.addEventListener('appinstalled', () => { installEvent = null; toast('Aplikacja zainstalowana – znajdziesz ją na ekranie głównym.'); emit('install'); });
 
@@ -830,7 +903,7 @@
     await dialog({
       title: 'Zainstaluj aplikację',
       body: isIOS()
-        ? '<ol class="steps"><li>Dotknij przycisku <b>Udostępnij</b> (kwadrat ze strzałką) na dole Safari.</li><li>Wybierz <b>Do ekranu początkowego</b>.</li><li>Dotknij <b>Dodaj</b>.</li></ol>'
+        ? '<ol class="steps"><li>Otwórz tę stronę w <b>Safari</b>.</li><li>Dotknij <b>Udostępnij</b> (kwadrat ze strzałką; w nowszym iOS najpierw <b>⋯</b> obok adresu).</li><li>Wybierz <b>Do ekranu początkowego</b> i dotknij <b>Dodaj</b>.</li></ol><p class="small">Uruchamiaj aplikację z ikony – wtedy iPhone nie usuwa jej danych.</p>'
         : '<ol class="steps"><li>Dotknij menu <b>⋮</b> w prawym górnym rogu Chrome.</li><li>Wybierz <b>Zainstaluj aplikację</b> albo <b>Dodaj do ekranu głównego</b>.</li><li>Potwierdź <b>Zainstaluj</b>.</li></ol><p class="small">Ikona LiveTranscribe pojawi się na ekranie telefonu.</p>',
       buttons: [{ label: 'OK', value: true }],
     });
@@ -948,8 +1021,10 @@
           <p class="muted">Spotkania, wykłady i rozmowy – tekst pojawia się na żywo, a gotowy PDF wyślesz jednym dotknięciem.</p>
           <button class="btn hero block" data-act="start">${icon('mic')}${active ? 'WRÓĆ DO TRANSKRYPCJI' : 'ROZPOCZNIJ TRANSKRYPCJĘ'}</button>
           <button class="btn outline block" data-act="import" style="margin-top:10px">${icon('file')}WCZYTAJ NAGRANIE Z PLIKU</button>
-          <input type="file" id="importfile" accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac,.aac,.webm,.mp4" hidden>
-          <p class="small muted" style="margin:4px 0 0">Np. z dyktafonu: MP3, M4A, WAV, OGG, FLAC albo film MP4. Plik zostaje w telefonie – do transkrypcji trafiają tylko jego fragmenty.</p>
+          <input type="file" id="importfile" accept="audio/*,video/*,.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac,.aac,.webm,.mp4,.mov,.caf,.aif,.aiff,.qta" hidden>
+          <p class="small muted" style="margin:4px 0 0">${IS_IOS
+            ? 'Np. z Dyktafonu: w nagraniu dotknij ⋯ → Zachowaj w Plikach, a potem wybierz je tutaj. Działa z M4A, MP3, WAV, AAC, FLAC i filmami. Plik zostaje w telefonie – do transkrypcji trafiają tylko jego fragmenty.'
+            : 'Np. z dyktafonu: MP3, M4A, WAV, OGG, FLAC albo film MP4. Plik zostaje w telefonie – do transkrypcji trafiają tylko jego fragmenty.'}</p>
           ${installCard()}
           <div class="card soft">
             <p>${hasKey() ? `Tryb chmurowy: dźwięk jest wysyłany szyfrowanym połączeniem do ${esc(providerHost())}` : '<b>Brak klucza API</b> – dodaj go w Ustawieniach, aby zamieniać mowę na tekst.'}</p>
@@ -998,7 +1073,7 @@
           <button class="btn tonal" id="resume">${icon('play')}WZNÓW</button>
           <button class="btn" id="end">ZAKOŃCZ</button>
         </div>
-        <div class="set"><div class="lbl"><b>Nie wygaszaj ekranu</b><small>Najpewniejsze przy długich spotkaniach. Wyłączone – nagrywanie zwykle trwa też przy zablokowanym telefonie.</small></div>
+        <div class="set"><div class="lbl"><b>Nie wygaszaj ekranu</b><small>${IS_IOS ? 'Na iPhonie konieczne: przy zablokowanym ekranie lub w innej aplikacji iOS wyłącza mikrofon stronom internetowym.' : 'Najpewniejsze przy długich spotkaniach. Wyłączone – nagrywanie zwykle trwa też przy zablokowanym telefonie.'}</small></div>
           <label class="switch"><input type="checkbox" id="awake" ${settings.keepAwake ? 'checked' : ''}><span></span></label></div>
       </main>`;
 
@@ -1039,6 +1114,12 @@
       els.end.disabled = !recOrPause;
       let b = '';
       if (rec.error) b += `<div class="banner error"><span>${esc(rec.error)}</span></div>`;
+      if (IS_IOS && st === 'idle' && !rec.lastSessionId) {
+        b += '<div class="banner"><span>iPhone: nagrywaj z aplikacją na ekranie i nie blokuj telefonu. Długie spotkanie najpewniej nagrasz <b>Dyktafonem</b>, a potem wczytasz plik: Start → WCZYTAJ NAGRANIE Z PLIKU.</span></div>';
+      }
+      if (rec.wakeLockFailed && settings.keepAwake && (st === 'recording' || st === 'paused')) {
+        b += '<div class="banner"><span>Ten telefon nie pozwala stronie blokować wygaszania ekranu. Na czas nagrania ustaw: Ustawienia → Ekran i jasność → Automatyczna blokada → Nigdy.</span></div>';
+      }
       if (queue.problem && (st !== 'idle' || rec.lastSessionId)) b += `<div class="banner error"><span>${esc(queue.problem)}</span><button class="btn text" data-act="retry">Ponów</button></div>`;
       els.banners.innerHTML = b;
       els.after.innerHTML = st === 'idle' && rec.lastSessionId
@@ -1260,8 +1341,8 @@
         const pdf = await db.kvGet('pdf:' + id);
         const name = await promptDlg('Nazwa pliku', pdf.name.replace(/\.pdf$/i, ''), 'Pobierz', '.pdf');
         if (!name) return;
-        downloadBlob(pdf.blob, safeName(name) + '.pdf');
-        toast('Zapisano w folderze Pobrane (Download): ' + safeName(name) + '.pdf', 6000);
+        const how = await saveFiles([new File([pdf.blob], safeName(name) + '.pdf', { type: 'application/pdf' })]);
+        if (how === 'download') toast((IS_IOS ? 'Zapisano w aplikacji Pliki → Pobrane: ' : 'Zapisano w folderze Pobrane (Download): ') + safeName(name) + '.pdf', 6000);
       } else if (act === 'share') sharePdf(await db.kvGet('pdf:' + id), s.title);
       else if (act === 'open') openPdf(await db.kvGet('pdf:' + id));
       else if (act === 'menu') {
@@ -1283,7 +1364,7 @@
           const text = s.editedText != null ? s.editedText : composeChunks(chunks, settings.timestamps, settings.speakers && diarizationAvailable());
           try { await navigator.clipboard.writeText(text); toast('Skopiowano tekst'); } catch (_) { toast('Nie udało się skopiować'); }
         } else if (v === 'audio') {
-          audio.forEach((c, i) => setTimeout(() => downloadBlob(c.audio, safeName(s.title) + '_' + String(c.idx + 1).padStart(3, '0') + '.wav'), i * 400));
+          await saveFiles(audio.map((c) => new File([c.audio], safeName(s.title) + '_' + String(c.idx + 1).padStart(3, '0') + '.wav', { type: 'audio/wav' })));
         } else if (v === 'delete') {
           if (await confirmDlg('Usunąć dokument?', `„${s.title}” zostanie trwale usunięty z aplikacji. Pliki PDF pobrane wcześniej pozostaną w telefonie.`, 'Usuń', true)) {
             await db.deleteSession(id);

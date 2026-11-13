@@ -15,6 +15,35 @@ Wersja z przeglądarki nie ma trybu lokalnego (offline). Przy kilkugodzinnych sp
 
 ---
 
+## iPhone i iPad
+
+Na iPhonie działa wersja z przeglądarki (plik APK jest tylko dla Androida).
+
+1. Otwórz w **Safari**: **https://livetranscribe-1chw.onrender.com**
+2. Dotknij **Udostępnij** (kwadrat ze strzałką; w nowszym iOS najpierw **⋯** obok adresu) → **Do ekranu początkowego** → **Dodaj**.
+3. Uruchamiaj LiveTranscribe **z ikony na ekranie początkowym** – wtedy iPhone nie usuwa zapisanych transkrypcji.
+4. **Ustawienia** → **Hasło dostępu do serwera** → wpisz hasło od właściciela → **Zapisz hasło**.
+
+**Nagrywanie na żywo:** **ROZPOCZNIJ TRANSKRYPCJĘ** → przy pytaniu o mikrofon **Zezwól** (iPhone może pytać przy każdym uruchomieniu). Ważne: iOS wyłącza mikrofon stronom internetowym, gdy ekran zgaśnie albo przełączysz się do innej aplikacji. Dlatego:
+
+- zostaw włączone **Nie wygaszaj ekranu** (na iPhonie jest domyślnie włączone),
+- nie blokuj telefonu i nie przełączaj aplikacji w trakcie nagrywania,
+- jeśli aplikacja pokaże komunikat o wygaszaniu ekranu: Ustawienia iPhone'a → **Ekran i jasność** → **Automatyczna blokada** → **Nigdy** (na czas nagrania).
+
+Jeśli mikrofon jednak się wyłączy, aplikacja powie, ile sekund nagrania przepadło, i nagrywa dalej.
+
+**Długie spotkanie – najpewniejszy sposób na iPhonie:** nagraj je aplikacją **Dyktafon** (nagrywa też przy zablokowanym ekranie), a potem:
+
+1. W Dyktafonie dotknij nagrania → **⋯** → **Zachowaj w Plikach** (np. w folderze „Na moim iPhonie”).
+2. W LiveTranscribe: **WCZYTAJ NAGRANIE Z PLIKU** → **Przeglądaj** → wybierz zapisane nagranie.
+3. Nie zamykaj aplikacji, dopóki pasek wczytywania nie dojdzie do końca (zwykle kilka–kilkanaście sekund). Tekst pojawia się na bieżąco.
+
+Na iPhonie można wczytać naraz nagranie do 2 godzin (dłuższe podziel na części). Działają pliki M4A (Dyktafon), MP3, WAV, AAC, FLAC i filmy.
+
+**PDF na iPhonie:** **POBIERZ PDF** otwiera menu, w którym wybierasz **Zachowaj w Plikach**. **UDOSTĘPNIJ PDF** wyśle dokument przez AirDrop, Mail, WhatsApp, Messengera itd.
+
+---
+
 ## Aplikacja APK na Androida
 
 Wszystko poniżej robisz na telefonie z Androidem 10 lub nowszym. Nie potrzebujesz komputera.
