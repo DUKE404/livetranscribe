@@ -166,7 +166,8 @@ object TranscriptionQueue {
             } catch (e: ApiException) {
                 if (e.code == 429 || e.code >= 500) {
                     serverFails++
-                    stalled.value = "Serwer chwilowo niedostępny (${e.code}) – ponawiam"
+                    stalled.value = if (e.code == 429 && !e.message.isNullOrBlank()) e.message
+                    else "Serwer chwilowo niedostępny (${e.code}) – ponawiam"
                     if (serverFails >= 6) return Outcome.NETWORK
                     delay(backoff)
                     backoff = min(backoff * 2, 30_000L)

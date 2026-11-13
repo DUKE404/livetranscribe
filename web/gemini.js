@@ -9,8 +9,11 @@
 
 // Adres Google zgodny z OpenAI: przyjmuje dźwięk (input_audio) i klucz jako „Authorization: Bearer”.
 const BASE_URL = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai';
-// Alias „latest” wskazuje bieżący model Flash; pozostałe to zapas, gdyby alias był niedostępny.
-const MODELS = (process.env.GEMINI_MODELS || 'gemini-flash-latest,gemini-2.5-flash,gemini-2.0-flash').split(',').map((s) => s.trim()).filter(Boolean);
+// Najpierw Flash-Lite: w darmowym planie ma wielokrotnie większy dzienny limit (ok. 500 zapytań wobec ok. 20
+// dla Flash, stan na jesień 2026). Każdy model ma osobny limit – po wyczerpaniu dziennego idziemy do następnego.
+const MODELS = (process.env.GEMINI_MODELS || 'gemini-flash-lite-latest,gemini-2.5-flash-lite,gemini-flash-latest,gemini-2.5-flash')
+  .split(',').map((s) => s.trim()).filter(Boolean);
+const DAILY = /PerDay|per[ _-]?day|daily/i;
 
 const LANGS = { pl: 'polski', en: 'angielski', de: 'niemiecki', uk: 'ukraiński', fr: 'francuski', es: 'hiszpański' };
 
@@ -123,7 +126,14 @@ async function transcribe(key, audio, { language = 'pl', context = '', glossary 
     if (r.status === 401 || r.status === 403 || (r.status === 400 && /api key/i.test(msg))) {
       throw new GeminiError(401, 'Google odrzucił klucz API. Sprawdź go w Ustawieniach.');
     }
-    if (r.status === 429) throw new GeminiError(429, 'Przekroczono limit darmowego planu Gemini – ponowię za chwilę.');
+    if (r.status === 429) {
+      if (DAILY.test(text)) {
+        // Dzienny limit tego modelu wyczerpany – następny model ma własny limit.
+        if (m < MODELS.length - 1) { last = msg; continue; }
+        throw new GeminiError(429, 'Wyczerpany dzienny limit darmowego planu Gemini. Nagranie czeka w telefonie i dokończy się po odnowieniu limitu (następnego dnia) – albo przełącz silnik na Groq w Ustawieniach.');
+      }
+      throw new GeminiError(429, 'Limit zapytań Gemini na minutę – ponowię za chwilę.');
+    }
     if (r.status >= 500) throw new GeminiError(502, 'Usługa Gemini chwilowo nie odpowiada – ponowię.');
     throw new GeminiError(400, 'Błąd usługi Gemini (' + r.status + ')' + (msg ? ': ' + msg : ''));
   }
