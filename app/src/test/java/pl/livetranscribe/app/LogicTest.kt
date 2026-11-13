@@ -267,13 +267,8 @@ class LogicTest {
         val inner = """{"segments":[{"speaker":"A","text":"Proponuję przesunąć termin na piątek."},""" +
             """{"speaker":"B","text":"Nie, piątek odpada."},{"speaker":"Rozmówca A","text":"To czwartek?"},{"speaker":"B","text":" "}]}"""
         val api = org.json.JSONObject().put(
-            "candidates",
-            org.json.JSONArray().put(
-                org.json.JSONObject().put(
-                    "content",
-                    org.json.JSONObject().put("parts", org.json.JSONArray().put(org.json.JSONObject().put("text", inner))),
-                ),
-            ),
+            "choices",
+            org.json.JSONArray().put(org.json.JSONObject().put("message", org.json.JSONObject().put("role", "assistant").put("content", inner))),
         ).toString()
         val segs = GeminiEngine.parseResponse(api)
         assertEquals(3, segs.size)
@@ -286,6 +281,7 @@ class LogicTest {
         assertEquals(1, GeminiEngine.parseSegments("```json\n{\"segments\":[{\"speaker\":\"a\",\"text\":\"Tak.\"}]}\n```").size)
         assertEquals(0, GeminiEngine.parseSegments("{\"segments\":[]}").size)
         assertEquals(0, GeminiEngine.parseSegments("nie wiem").size)
+        assertEquals("API key not valid", GeminiEngine.errorMessage("[{\"error\":{\"message\":\"API key not valid\"}}]"))
         val prompt = GeminiEngine.instruction("pl", "A: Dzień dobry.\nB: Cześć.", "Kowalczyk")
         assertTrue(prompt.contains("polski") && prompt.contains("B: Cześć.") && prompt.contains("Kowalczyk"))
     }

@@ -1496,7 +1496,7 @@
         <div class="section">Aplikacja na Androida</div>
         <p class="small muted">Wolisz klasyczną aplikację? Pobierz plik APK (wymaga zgody na instalację z nieznanych źródeł).</p>
         <a class="btn outline" href="/apk">${icon('download')}Pobierz APK na Androida</a>
-        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.2</p>
+        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.3</p>
       </main>${nav('settings')}`;
     }
     draw();

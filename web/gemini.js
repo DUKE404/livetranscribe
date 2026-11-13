@@ -7,7 +7,8 @@
  * trafia do polecenia, żeby te same osoby zachowywały litery w kolejnych fragmentach.
  */
 
-const NATIVE_URL = process.env.GEMINI_NATIVE_URL || 'https://generativelanguage.googleapis.com/v1beta';
+// Adres Google zgodny z OpenAI: przyjmuje dźwięk (input_audio) i klucz jako „Authorization: Bearer”.
+const BASE_URL = process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai';
 // Alias „latest” wskazuje bieżący model Flash; pozostałe to zapas, gdyby alias był niedostępny.
 const MODELS = (process.env.GEMINI_MODELS || 'gemini-flash-latest,gemini-2.5-flash,gemini-2.0-flash').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -27,17 +28,18 @@ function instruction({ language, context, glossary }) {
     context ? `Koniec poprzedniego fragmentu tej samej rozmowy – te same osoby zachowują swoje litery:\n"""${context}"""` : '',
     glossary ? `Nazwy, które mogą paść w rozmowie: ${glossary}.` : '',
     'Jeśli w nagraniu nie ma mowy (cisza, szum, muzyka), zwróć pustą listę wypowiedzi.',
+    'Odpowiedz wyłącznie w formacie JSON: {"segments":[{"speaker":"A","text":"…"}]}',
   ].filter(Boolean).join('\n');
 }
 
 const SCHEMA = {
-  type: 'OBJECT',
+  type: 'object',
   properties: {
     segments: {
-      type: 'ARRAY',
+      type: 'array',
       items: {
-        type: 'OBJECT',
-        properties: { speaker: { type: 'STRING' }, text: { type: 'STRING' } },
+        type: 'object',
+        properties: { speaker: { type: 'string' }, text: { type: 'string' } },
         required: ['speaker', 'text'],
       },
     },
@@ -73,23 +75,24 @@ function parseSegments(raw) {
  * Rzuca GeminiError z kodem jak /api/transcribe (401 – klucz, 429 – limit, 502 – usługa, 400 – inne).
  */
 async function transcribe(key, audio, { language = 'pl', context = '', glossary = '', fetchImpl = fetch } = {}) {
-  const body = {
-    contents: [{
-      role: 'user',
-      parts: [
-        { text: instruction({ language, context, glossary }) },
-        { inline_data: { mime_type: 'audio/wav', data: Buffer.from(audio).toString('base64') } },
-      ],
-    }],
-    generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: SCHEMA },
-  };
+  const messages = [{
+    role: 'user',
+    content: [
+      { type: 'text', text: instruction({ language, context, glossary }) },
+      { type: 'input_audio', input_audio: { data: Buffer.from(audio).toString('base64'), format: 'wav' } },
+    ],
+  }];
   let last = null;
-  for (const model of MODELS) {
+  let schema = true;
+  for (let m = 0; m < MODELS.length; m++) {
+    const model = MODELS[m];
+    const body = { model, messages, temperature: 0 };
+    if (schema) body.response_format = { type: 'json_schema', json_schema: { name: 'transkrypcja', schema: SCHEMA } };
     let r;
     try {
-      r = await fetchImpl(`${NATIVE_URL}/models/${encodeURIComponent(model)}:generateContent`, {
+      r = await fetchImpl(`${BASE_URL}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(170000),
       });
@@ -100,16 +103,21 @@ async function transcribe(key, audio, { language = 'pl', context = '', glossary 
     if (r.ok) {
       let data = {};
       try { data = JSON.parse(text); } catch (_) { /* */ }
-      const cand = (data.candidates || [])[0] || {};
-      const raw = ((cand.content && cand.content.parts) || []).map((p) => p.text || '').join('');
+      const raw = (((data.choices || [])[0] || {}).message || {}).content || '';
       const segs = parseSegments(raw).map((x) => ({ s: 0, e: 0, p: x.p, t: x.t }));
       return { text: segs.map((x) => x.t).join(' '), segments: segs, model };
     }
     let msg = '';
-    try { msg = JSON.parse(text).error.message || ''; } catch (_) { /* */ }
+    try { const err = JSON.parse(text); msg = (Array.isArray(err) ? err[0] : err).error.message || ''; } catch (_) { /* */ }
     // Model niedostępny dla tego klucza / wycofany – spróbuj następnego z listy.
     if (r.status === 404 || (r.status === 400 && /model/i.test(msg) && /not (found|supported)/i.test(msg))) {
       last = msg;
+      continue;
+    }
+    // Model nie przyjmuje wymuszonego formatu odpowiedzi – ten sam model jeszcze raz, JSON tylko z polecenia.
+    if (r.status === 400 && schema && /response_format|schema|json/i.test(msg)) {
+      schema = false;
+      m--;
       continue;
     }
     if (r.status === 401 || r.status === 403 || (r.status === 400 && /api key/i.test(msg))) {

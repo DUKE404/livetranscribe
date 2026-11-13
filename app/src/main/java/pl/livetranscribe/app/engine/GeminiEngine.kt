@@ -28,48 +28,51 @@ class GeminiEngine(
     override suspend fun transcribe(req: TranscribeRequest): TranscribeResult = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) throw ConfigException("Brak klucza API. Dodaj go w Ustawieniach.")
         val wav = wavBytes(req.audio)
-        val body = JSONObject()
-            .put(
-                "contents",
-                JSONArray().put(
-                    JSONObject().put("role", "user").put(
-                        "parts",
-                        JSONArray()
-                            .put(JSONObject().put("text", instruction(language, req.context, req.glossary)))
-                            .put(
-                                JSONObject().put(
-                                    "inline_data",
-                                    JSONObject().put("mime_type", "audio/wav").put("data", Base64.encodeToString(wav, Base64.NO_WRAP)),
-                                ),
-                            ),
+        val messages = JSONArray().put(
+            JSONObject().put("role", "user").put(
+                "content",
+                JSONArray()
+                    .put(JSONObject().put("type", "text").put("text", instruction(language, req.context, req.glossary)))
+                    .put(
+                        JSONObject().put("type", "input_audio").put(
+                            "input_audio",
+                            JSONObject().put("data", Base64.encodeToString(wav, Base64.NO_WRAP)).put("format", "wav"),
+                        ),
                     ),
-                ),
-            )
-            .put(
-                "generationConfig",
-                JSONObject().put("temperature", 0).put("responseMimeType", "application/json").put("responseSchema", SCHEMA),
-            )
-            .toString()
+            ),
+        )
 
         var last: String? = null
-        for (model in models) {
+        var schema = true
+        var m = 0
+        while (m < models.size) {
+            val body = JSONObject().put("model", models[m]).put("messages", messages).put("temperature", 0)
+            if (schema) {
+                body.put(
+                    "response_format",
+                    JSONObject().put("type", "json_schema")
+                        .put("json_schema", JSONObject().put("name", "transkrypcja").put("schema", SCHEMA)),
+                )
+            }
             val request = Request.Builder()
-                .url("$NATIVE_URL/models/$model:generateContent")
-                .header("x-goog-api-key", apiKey)
-                .post(body.toRequestBody("application/json".toMediaType()))
+                .url("$OPENAI_URL/chat/completions")
+                .header("Authorization", "Bearer $apiKey")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
                 .build()
             val (code, text) = CloudEngine.client.newCall(request).execute().use { it.code to (it.body?.string().orEmpty()) }
             if (code in 200..299) {
                 val segs = parseResponse(text)
                 return@withContext TranscribeResult(segs.joinToString(" ") { it.text }, segs)
             }
-            val msg = try { JSONObject(text).optJSONObject("error")?.optString("message").orEmpty() } catch (e: Exception) { "" }
+            val msg = errorMessage(text)
             val modelMissing = code == 404 ||
                 (code == 400 && msg.contains("model", true) && (msg.contains("not found", true) || msg.contains("not supported", true)))
             when {
-                modelMissing -> last = msg // model wycofany lub niedostępny – następny z listy
+                modelMissing -> { last = msg; m++ } // model wycofany lub niedostępny – następny z listy
                 code == 401 || code == 403 || (code == 400 && msg.contains("api key", true)) ->
                     throw AuthException("Google odrzucił klucz API. Sprawdź go w Ustawieniach.")
+                // Model nie przyjmuje wymuszonego formatu – ten sam model jeszcze raz, JSON tylko z polecenia.
+                code == 400 && schema && Regex("response_format|schema|json", RegexOption.IGNORE_CASE).containsMatchIn(msg) -> schema = false
                 else -> throw ApiException(code, if (msg.isBlank()) "Błąd usługi Gemini ($code)" else "Błąd usługi Gemini ($code): $msg")
             }
         }
@@ -97,8 +100,7 @@ class GeminiEngine(
     }
 
     companion object {
-        const val NATIVE_URL = "https://generativelanguage.googleapis.com/v1beta"
-        /** Adres zgodny z OpenAI – do sprawdzania klucza i notatek AI. */
+        /** Adres Google zgodny z OpenAI: transkrypcja (input_audio), notatki AI i sprawdzanie klucza. */
         const val OPENAI_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
         /** Alias „latest” wskazuje bieżący model Flash; pozostałe to zapas, gdyby alias był niedostępny. */
         val MODELS = listOf("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash")
@@ -107,15 +109,15 @@ class GeminiEngine(
 
         private val SCHEMA: JSONObject
             get() = JSONObject()
-                .put("type", "OBJECT")
+                .put("type", "object")
                 .put(
                     "properties",
                     JSONObject().put(
                         "segments",
-                        JSONObject().put("type", "ARRAY").put(
+                        JSONObject().put("type", "array").put(
                             "items",
-                            JSONObject().put("type", "OBJECT")
-                                .put("properties", JSONObject().put("speaker", JSONObject().put("type", "STRING")).put("text", JSONObject().put("type", "STRING")))
+                            JSONObject().put("type", "object")
+                                .put("properties", JSONObject().put("speaker", JSONObject().put("type", "string")).put("text", JSONObject().put("type", "string")))
                                 .put("required", JSONArray().put("speaker").put("text")),
                         ),
                     ),
@@ -133,16 +135,24 @@ class GeminiEngine(
                 context?.takeIf { it.isNotBlank() }?.let { "Koniec poprzedniego fragmentu tej samej rozmowy – te same osoby zachowują swoje litery:\n\"\"\"${it.takeLast(600)}\"\"\"" },
                 glossary?.takeIf { it.isNotBlank() }?.let { "Nazwy, które mogą paść w rozmowie: ${it.take(300)}." },
                 "Jeśli w nagraniu nie ma mowy (cisza, szum, muzyka), zwróć pustą listę wypowiedzi.",
+                "Odpowiedz wyłącznie w formacie JSON: {\"segments\":[{\"speaker\":\"A\",\"text\":\"…\"}]}",
             ).joinToString("\n")
         }
 
-        /** Odpowiedź generateContent -> odcinki z rozmówcami. */
+        /** Odpowiedź chat/completions -> odcinki z rozmówcami. */
         fun parseResponse(json: String): List<Seg> {
             val o = try { JSONObject(json) } catch (e: Exception) { return emptyList() }
-            val parts = o.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts") ?: return emptyList()
-            val sb = StringBuilder()
-            for (i in 0 until parts.length()) sb.append(parts.optJSONObject(i)?.optString("text").orEmpty())
-            return parseSegments(sb.toString())
+            val content = o.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty()
+            return parseSegments(content)
+        }
+
+        /** Komunikat błędu Google (obiekt albo tablica z obiektem). */
+        fun errorMessage(body: String): String = try {
+            val t = body.trim()
+            val o = if (t.startsWith("[")) JSONArray(t).optJSONObject(0) else JSONObject(t)
+            o?.optJSONObject("error")?.optString("message").orEmpty()
+        } catch (e: Exception) {
+            ""
         }
 
         /** Tekst modelu (JSON, czasem w bloku kodu) -> odcinki. */
