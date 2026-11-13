@@ -354,11 +354,51 @@
 
   function clean(text) {
     const t = String(text || '').trim().replace(/[ \t]+/g, ' ');
+    // Same kropki, nuty, myślniki – brak słów.
+    if (!/[\p{L}\p{N}]/u.test(t)) return '';
     if (t.length < 90) {
       const low = t.toLowerCase();
       if (JUNK.some((j) => low.includes(j))) return '';
     }
     return t;
+  }
+
+  /**
+   * Krótkie zdania, które Whisper „dopowiada” na ciszy lub szumie (najczęstsze w napisach filmów,
+   * na których był uczony). Odrzucane tylko wtedy, gdy model sam nie jest pewny, że słyszy mowę.
+   */
+  const HALLUCINATIONS = new Set([
+    'dziękuję za uwagę', 'dzięki za uwagę', 'dziękujemy za uwagę', 'dziękuję', 'dzięki', 'dziękuję bardzo',
+    'dzięki wielkie', 'bardzo dziękuję', 'dziękujemy', 'do zobaczenia', 'do usłyszenia', 'do widzenia',
+    'dzień dobry', 'cześć', 'hej', 'pa', 'pa pa', 'dobranoc', 'następna stacja', 'muzyka', 'oklaski',
+    'koniec', 'to wszystko', 'subskrybuj', 'zapraszam', 'dziękuję za obejrzenie', 'dziękuję za oglądanie',
+    'thank you', 'thanks for watching', 'bye',
+  ]);
+  const HALLU_PREFIX = ['napisy', 'tłumaczenie', 'zdjęcia i montaż', 'transkrypcja', 'subtitles'];
+
+  const normalizeWords = (t) => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+
+  /**
+   * Czy odcinek z odpowiedzi Whisper (verbose_json) to najpewniej zmyślenie, a nie mowa.
+   * seg: { text, start, end (s), no_speech_prob, avg_logprob, compression_ratio }.
+   */
+  function isHallucination(seg) {
+    const norm = normalizeWords(seg.text);
+    if (!norm) return true;
+    const ns = Number(seg.no_speech_prob) || 0;
+    const lp = seg.avg_logprob == null ? 0 : Number(seg.avg_logprob) || 0;
+    const cr = Number(seg.compression_ratio) || 0;
+    if (cr > 2.4) return true;                 // zapętlone powtórzenia
+    if (ns > 0.6 && lp < -0.7) return true;    // model sam ocenia, że to nie mowa (reguła Whisper, nieco ostrzejsza)
+    if (ns > 0.9 && lp < -0.3) return true;
+    const known = HALLUCINATIONS.has(norm) || HALLU_PREFIX.some((p) => norm.startsWith(p));
+    if (known) {
+      const dur = Math.max(0, (Number(seg.end) || 0) - (Number(seg.start) || 0));
+      const words = norm.split(' ').length;
+      // Prawdziwe „dzień dobry” model słyszy wyraźnie i krótko; zmyślone – niepewnie albo „rozciągnięte” na długą ciszę.
+      if (ns > 0.1 || lp < -0.45 || (dur > 4 && words / dur < 0.6)) return true;
+    }
+    return false;
   }
 
   /** Podpowiedź dla modelu: słownik nazw + koniec poprzedniego fragmentu (Whisper czyta ok. 220 tokenów). */
@@ -371,7 +411,7 @@
     return out.trim();
   }
 
-  const api = { SAMPLE_RATE, Chunker, FileSplitter, toInt16, Resampler, wavBytes, formatTime, compose, clean, speakerLabel, buildPrompt };
+  const api = { SAMPLE_RATE, Chunker, FileSplitter, toInt16, Resampler, wavBytes, formatTime, compose, clean, isHallucination, speakerLabel, buildPrompt };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LTCore = api;
 })(typeof self !== 'undefined' ? self : this);

@@ -15,6 +15,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { buildPdf } = require('./pdf');
 const { summarize, normalize } = require('./summary');
+const { isHallucination } = require('./public/core.js');
 
 const PORT = process.env.PORT || 3000;
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
@@ -167,17 +168,20 @@ app.post(
       }
       let data;
       try { data = JSON.parse(body); } catch (_) { data = { text: body }; }
-      const segments = Array.isArray(data.segments) ? data.segments
-        .filter((s) => s && String(s.text || '').trim())
+      const raw = Array.isArray(data.segments) ? data.segments.filter((s) => s && String(s.text || '').trim()) : [];
+      // Odcinki z ciszy lub szumu, które Whisper „dopowiedział” (np. „Dziękuję za uwagę”), są pomijane.
+      const kept = raw.filter((s) => !isHallucination(s));
+      const dropped = raw.length - kept.length;
+      const segments = kept
         .map((s) => ({
           s: Math.round((s.start || 0) * 1000),
           e: Math.round((s.end || 0) * 1000),
           p: s.speaker != null ? String(s.speaker) : undefined,
           t: String(s.text).trim(),
-        })) : [];
+        }));
       let text = String(data.text || '').trim();
-      if (!text && segments.length) text = segments.map((s) => s.t).join(' ');
-      res.json({ text, segments: diarize ? segments : [], model });
+      if (dropped || (!text && segments.length)) text = segments.map((s) => s.t).join(' ');
+      res.json({ text, segments: diarize ? segments : [], model, dropped });
     } catch (e) {
       res.status(502).json({ error: 'Brak połączenia z usługą transkrypcji – ponowię.' });
     }
