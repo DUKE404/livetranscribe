@@ -114,6 +114,8 @@ object TextComposer {
     /**
      * Czy odcinek z odpowiedzi Whisper (verbose_json) to najpewniej zmyślenie, a nie mowa.
      * [startS]/[endS] w sekundach; brakujące pola (inne modele) nie wpływają na ocenę.
+     * [alone]: czy to jedyna wypowiedź we fragmencie. Typowe zmyślone zdanie w środku rozmowy (np. czyjeś
+     * „dzięki” wtrącone między innymi wypowiedziami) jest prawdziwe – odrzucamy je tylko, gdy stoi samo.
      */
     fun isHallucination(
         text: String,
@@ -122,6 +124,7 @@ object TextComposer {
         noSpeechProb: Double,
         avgLogprob: Double,
         compressionRatio: Double,
+        alone: Boolean = true,
     ): Boolean {
         val norm = normalizeWords(text)
         if (norm.isEmpty()) return true
@@ -129,7 +132,7 @@ object TextComposer {
         if (noSpeechProb > 0.6 && avgLogprob < -0.7) return true // model sam ocenia, że to nie mowa
         if (noSpeechProb > 0.9 && avgLogprob < -0.3) return true
         val known = norm in hallucinations || hallucinationPrefixes.any { norm.startsWith(it) }
-        if (known) {
+        if (known && alone) {
             val dur = (endS - startS).coerceAtLeast(0.0)
             val words = norm.split(' ').size
             // Prawdziwe „dzień dobry” model słyszy wyraźnie i krótko; zmyślone – niepewnie albo „rozciągnięte” na ciszę.

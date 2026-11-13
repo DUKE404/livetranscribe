@@ -150,6 +150,9 @@ test('filtr zmyśleń Whisper: odrzuca zmyślenia, zostawia mowę', () => {
   assert.ok(!h('Dziękuję za uwagę, to wszystko na dziś.', 0, 3, 0.01, -0.25));
   assert.ok(!h('Omówiliśmy budżet.', 0, 2, 0.7, -0.3));
   assert.ok(!isHallucination({ text: 'Dzień dobry', start: 0, end: 1 }));
+  const thanks = { text: 'Dzięki.', start: 4, end: 5, no_speech_prob: 0.3, avg_logprob: -0.6, compression_ratio: 1 };
+  assert.ok(!isHallucination(thanks, false)); // wtrącenie w środku rozmowy zostaje
+  assert.ok(isHallucination(thanks, true));
   assert.strictEqual(clean('…'), '');
   assert.strictEqual(clean('Tak.'), 'Tak.');
 });

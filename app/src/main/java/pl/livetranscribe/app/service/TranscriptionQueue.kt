@@ -29,6 +29,7 @@ import pl.livetranscribe.app.engine.ApiException
 import pl.livetranscribe.app.engine.AuthException
 import pl.livetranscribe.app.engine.CloudEngine
 import pl.livetranscribe.app.engine.ConfigException
+import pl.livetranscribe.app.engine.GeminiEngine
 import pl.livetranscribe.app.engine.SegJson
 import pl.livetranscribe.app.engine.TextComposer
 import pl.livetranscribe.app.engine.TranscribeRequest
@@ -117,16 +118,23 @@ object TranscriptionQueue {
             try {
                 val engine: TranscriptionEngine
                 val upload: File
+                val language = if (settings.language == "auto") null else settings.language
                 if (local) {
                     engine = VoskEngine(app)
+                    upload = audio
+                } else if (settings.provider == "gemini") {
+                    // Gemini dostaje nieskompresowany dźwięk (WAV) – najlepiej słyszy wtedy ciche wtrącenia.
+                    engine = GeminiEngine(app.settings.apiKey(settings.provider), settings.geminiModels, language)
                     upload = audio
                 } else {
                     engine = CloudEngine(settings.baseUrl, app.settings.apiKey(settings.provider), settings.model)
                     upload = AudioFiles.compressOrSame(audio)
                 }
-                val language = if (settings.language == "auto") null else settings.language
-                val prompt = TextComposer.buildPrompt(settings.glossary, dao.previousText(chunk.sessionId, chunk.idx))
-                val result = engine.transcribe(TranscribeRequest(upload, language, prompt))
+                val previous = dao.previousChunk(chunk.sessionId, chunk.idx)
+                val prompt = TextComposer.buildPrompt(settings.glossary, previous?.text)
+                val result = engine.transcribe(
+                    TranscribeRequest(upload, language, prompt, context = speakerContext(previous), glossary = settings.glossary),
+                )
                 val text = TextComposer.clean(result.text)
                 val kept = finishAudio(audio, upload, settings.keepAudio)
                 dao.updateChunk(
@@ -171,6 +179,18 @@ object TranscriptionQueue {
                 fail(chunk, e.message)
             }
         }
+    }
+
+    /** Koniec poprzedniego fragmentu z oznaczeniami osób („A: …”) – dla Gemini. */
+    private fun speakerContext(c: ChunkEntity?): String? {
+        if (c == null) return null
+        val segs = SegJson.fromJson(c.segmentsJson).filter { it.text.isNotBlank() }
+        val text = if (segs.any { !it.speaker.isNullOrBlank() }) {
+            segs.joinToString("\n") { s -> (s.speaker?.let { "$it: " } ?: "") + s.text }
+        } else {
+            c.text
+        }
+        return text.takeLast(500)
     }
 
     private suspend fun fail(chunk: ChunkEntity, message: String?) {

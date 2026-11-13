@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const { buildPdf } = require('./pdf');
 const { summarize, normalize } = require('./summary');
 const { isHallucination } = require('./public/core.js');
+const gemini = require('./gemini');
 
 const PORT = process.env.PORT || 3000;
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
@@ -29,6 +30,14 @@ const PROVIDERS = {
     models: { fast: 'whisper-large-v3-turbo', balanced: 'whisper-large-v3', accurate: 'whisper-large-v3' },
     // Groq wycofał Llama 3.3 70B (sierpień 2026) i zaleca gpt-oss-120b.
     chatModel: process.env.GROQ_CHAT_MODEL || 'openai/gpt-oss-120b',
+  },
+  // Google Gemini: darmowy klucz (aistudio.google.com), rozpoznaje rozmówców. Transkrypcja – gemini.js,
+  // sprawdzanie klucza i notatka AI – przez zgodny z OpenAI adres Google.
+  gemini: {
+    url: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai',
+    key: () => process.env.GEMINI_API_KEY || '',
+    models: { fast: 'gemini', balanced: 'gemini', accurate: 'gemini' },
+    chatModel: process.env.GEMINI_CHAT_MODEL || 'gemini-flash-latest',
   },
   openai: {
     url: 'https://api.openai.com/v1',
@@ -92,7 +101,7 @@ app.get('/api/config', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({
     passwordRequired: !!APP_PASSWORD,
-    serverKeys: { groq: !!PROVIDERS.groq.key(), openai: !!PROVIDERS.openai.key() },
+    serverKeys: { groq: !!PROVIDERS.groq.key(), openai: !!PROVIDERS.openai.key(), gemini: !!PROVIDERS.gemini.key() },
     apkUrl: '/apk',
   });
 });
@@ -129,6 +138,20 @@ app.post(
       return res.status(401).json({ error: 'Brak klucza API. Wpisz go w Ustawieniach.', code: 'nokey' });
     }
     if (!req.body || !req.body.length) return res.status(400).json({ error: 'Pusty plik nagrania.' });
+
+    if (provider === 'gemini') {
+      try {
+        const out = await gemini.transcribe(key, req.body, {
+          language: String(req.query.language || '').slice(0, 5),
+          context: String(req.query.context || '').slice(-600),
+          glossary: String(req.query.glossary || '').slice(0, 300),
+        });
+        return res.json(out);
+      } catch (e) {
+        const status = e.status || 502;
+        return res.status(status).json({ error: e.message || 'Błąd usługi Gemini.', code: status === 401 ? 'auth' : undefined });
+      }
+    }
 
     const quality = ['fast', 'balanced', 'accurate'].includes(req.query.quality) ? req.query.quality : 'balanced';
     const diarize = provider === 'openai' && req.query.speakers === '1';
@@ -170,7 +193,8 @@ app.post(
       try { data = JSON.parse(body); } catch (_) { data = { text: body }; }
       const raw = Array.isArray(data.segments) ? data.segments.filter((s) => s && String(s.text || '').trim()) : [];
       // Odcinki z ciszy lub szumu, które Whisper „dopowiedział” (np. „Dziękuję za uwagę”), są pomijane.
-      const kept = raw.filter((s) => !isHallucination(s));
+      const alone = raw.filter((s) => /[\p{L}\p{N}]/u.test(s.text)).length <= 1;
+      const kept = raw.filter((s) => !isHallucination(s, alone));
       const dropped = raw.length - kept.length;
       const segments = kept
         .map((s) => ({

@@ -18,6 +18,10 @@ class TranscribeRequest(
     val language: String?,
     /** Koniec poprzedniego fragmentu – pomaga zachować ciągłość zdań. */
     val prompt: String?,
+    /** Koniec poprzedniego fragmentu z oznaczeniami osób (Gemini zachowuje te same litery). */
+    val context: String? = null,
+    /** Słownik nazw z Ustawień. */
+    val glossary: String? = null,
 )
 
 class TranscribeResult(val text: String, val segments: List<Seg>)
@@ -127,6 +131,9 @@ class CloudEngine(
         var dropped = 0
         val arr = o.optJSONArray("segments")
         if (arr != null) {
+            var wordy = 0
+            for (i in 0 until arr.length()) if (arr.optJSONObject(i)?.optString("text")?.any { it.isLetterOrDigit() } == true) wordy++
+            val alone = wordy <= 1
             for (i in 0 until arr.length()) {
                 val s = arr.optJSONObject(i) ?: continue
                 val t = s.optString("text").trim()
@@ -139,6 +146,7 @@ class CloudEngine(
                         s.optDouble("no_speech_prob", 0.0).takeIf { !it.isNaN() } ?: 0.0,
                         s.optDouble("avg_logprob", 0.0).takeIf { !it.isNaN() } ?: 0.0,
                         s.optDouble("compression_ratio", 0.0).takeIf { !it.isNaN() } ?: 0.0,
+                        alone,
                     )
                 ) {
                     dropped++

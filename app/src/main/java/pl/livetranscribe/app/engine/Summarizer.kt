@@ -116,8 +116,9 @@ class Summarizer(
                 .put("messages", JSONArray()
                     .put(JSONObject().put("role", "system").put("content", system))
                     .put(JSONObject().put("role", "user").put("content", user)))
-                .put("max_completion_tokens", maxTokens)
                 .put("reasoning_effort", "low")
+            // Adres Google (Gemini) zna klasyczne max_tokens; Groq i OpenAI – max_completion_tokens.
+            body.put(if (baseUrl.contains("generativelanguage.googleapis.com")) "max_tokens" else "max_completion_tokens", maxTokens)
             if (useJson) body.put("response_format", JSONObject().put("type", "json_object"))
             val req = Request.Builder()
                 .url("$baseUrl/chat/completions")

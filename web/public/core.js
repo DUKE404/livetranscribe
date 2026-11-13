@@ -93,7 +93,8 @@
       let sum = 0;
       for (let k = 0; k < f.length; k++) sum += f[k] * f[k];
       const rms = Math.sqrt(sum / f.length);
-      const threshold = Math.max(45, this.noiseFloor * 2);
+      // Próg mowy: dość nisko, żeby łapać też ciche wtrącenia osób dalej od telefonu.
+      const threshold = Math.max(30, this.noiseFloor * 2);
       const speech = rms > threshold;
       this.noiseFloor = rms < this.noiseFloor ? rms : this.noiseFloor + (rms - this.noiseFloor) * 0.002;
       this.noiseFloor = Math.min(1500, Math.max(10, this.noiseFloor));
@@ -381,8 +382,10 @@
   /**
    * Czy odcinek z odpowiedzi Whisper (verbose_json) to najpewniej zmyślenie, a nie mowa.
    * seg: { text, start, end (s), no_speech_prob, avg_logprob, compression_ratio }.
+   * alone: czy to jedyna wypowiedź we fragmencie. Typowe zmyślone zdanie w środku rozmowy (np. czyjeś
+   * „dzięki” wtrącone między innymi wypowiedziami) jest prawdziwe – odrzucamy je tylko, gdy stoi samo.
    */
-  function isHallucination(seg) {
+  function isHallucination(seg, alone = true) {
     const norm = normalizeWords(seg.text);
     if (!norm) return true;
     const ns = Number(seg.no_speech_prob) || 0;
@@ -392,7 +395,7 @@
     if (ns > 0.6 && lp < -0.7) return true;    // model sam ocenia, że to nie mowa (reguła Whisper, nieco ostrzejsza)
     if (ns > 0.9 && lp < -0.3) return true;
     const known = HALLUCINATIONS.has(norm) || HALLU_PREFIX.some((p) => norm.startsWith(p));
-    if (known) {
+    if (known && alone) {
       const dur = Math.max(0, (Number(seg.end) || 0) - (Number(seg.start) || 0));
       const words = norm.split(' ').length;
       // Prawdziwe „dzień dobry” model słyszy wyraźnie i krótko; zmyślone – niepewnie albo „rozciągnięte” na długą ciszę.

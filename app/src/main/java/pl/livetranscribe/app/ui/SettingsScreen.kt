@@ -34,6 +34,7 @@ private val engines = listOf(
 )
 private val providers = listOf(
     "groq" to "Groq (Whisper large-v3) – ma darmowy plan",
+    "gemini" to "Google Gemini – darmowy, rozpoznaje rozmówców",
     "openai" to "OpenAI – płatne, umie rozpoznawać rozmówców",
     "custom" to "Inna usługa zgodna z API OpenAI",
 )
@@ -94,7 +95,21 @@ fun SettingsScreen(vm: MainViewModel, onTab: (String) -> Unit) {
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     )
                 }
+                if (s.provider == "gemini") {
+                    Note(
+                        "Gemini zapisuje też wtrącenia i oznacza, kto mówi. Tekst pojawia się co 30–60 s. " +
+                            "W darmowym planie Google może wykorzystywać przesłane nagrania do ulepszania swoich usług i ma dzienny limit zapytań.",
+                    )
+                }
                 ApiKeyField(vm, s.provider, snackbar)
+                Note(
+                    when (s.provider) {
+                        "gemini" -> "Darmowy klucz: aistudio.google.com → Get API key → Create API key (wystarczy konto Google)."
+                        "openai" -> "Klucz utworzysz na platform.openai.com → API keys."
+                        "groq" -> "Darmowy klucz: console.groq.com → API Keys → Create API Key."
+                        else -> "Klucz od wybranej usługi."
+                    },
+                )
                 var model by remember(s.provider) { mutableStateOf(s.customModel) }
                 OutlinedTextField(
                     value = model,
@@ -144,8 +159,11 @@ fun SettingsScreen(vm: MainViewModel, onTab: (String) -> Unit) {
             Toggle("Znaczniki czasu", "Np. [12:05] przed każdym fragmentem", s.timestamps) { v -> vm.update { it.copy(timestamps = v) } }
             Toggle(
                 "Rozpoznawanie rozmówców",
-                if (s.diarizationAvailable) "Etykiety „Rozmówca A/B” są nadawane osobno w każdym fragmencie nagrania, więc ta sama osoba może dostać różne litery"
-                else "Dostępne tylko w chmurze u dostawcy OpenAI",
+                when {
+                    s.diarizationAvailable && s.provider == "gemini" -> "Etykiety „Rozmówca A/B”; Gemini stara się zachować te same litery w kolejnych fragmentach"
+                    s.diarizationAvailable -> "Etykiety „Rozmówca A/B” są nadawane osobno w każdym fragmencie nagrania, więc ta sama osoba może dostać różne litery"
+                    else -> "Dostępne w chmurze z Google Gemini (darmowy) lub OpenAI"
+                },
                 s.speakers && s.diarizationAvailable,
                 enabled = s.diarizationAvailable && !busy,
             ) { v -> vm.update { it.copy(speakers = v) } }

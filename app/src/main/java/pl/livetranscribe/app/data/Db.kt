@@ -139,6 +139,9 @@ interface AppDao {
 
     @Query("SELECT text FROM chunks WHERE sessionId = :sessionId AND idx < :idx AND status = 'DONE' AND text != '' ORDER BY idx DESC LIMIT 1")
     suspend fun previousText(sessionId: Long, idx: Int): String?
+
+    @Query("SELECT * FROM chunks WHERE sessionId = :sessionId AND idx < :idx AND status = 'DONE' AND text != '' ORDER BY idx DESC LIMIT 1")
+    suspend fun previousChunk(sessionId: Long, idx: Int): ChunkEntity?
 }
 
 /** Wersja 2: notatka AI przy dokumencie. Istniejące transkrypcje zostają nietknięte. */
