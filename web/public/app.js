@@ -75,9 +75,20 @@
     get: (k) => { try { return localStorage.getItem('lt.secret.' + k) || ''; } catch (_) { return ''; } },
     set: (k, v) => { try { if (v) localStorage.setItem('lt.secret.' + k, v); else localStorage.removeItem('lt.secret.' + k); } catch (_) { /* */ } },
   };
-  const chunkLimits = () => ({ fast: [6000, 15000], accurate: [20000, 45000] }[settings.quality] || [10000, 25000]);
-  const providerHost = () => (settings.provider === 'openai' ? 'api.openai.com' : 'api.groq.com');
-  const diarizationAvailable = () => settings.provider === 'openai';
+  // Gemini dostaje dłuższe fragmenty: więcej kontekstu do rozpoznania osób i mniej zapytań (limit darmowego planu).
+  const chunkLimits = () => (settings.provider === 'gemini'
+    ? ({ fast: [15000, 30000], accurate: [45000, 90000] }[settings.quality] || [30000, 60000])
+    : ({ fast: [6000, 15000], accurate: [20000, 45000] }[settings.quality] || [10000, 25000]));
+  const providerHost = () => ({ openai: 'api.openai.com', gemini: 'generativelanguage.googleapis.com' }[settings.provider] || 'api.groq.com');
+  const diarizationAvailable = () => settings.provider === 'openai' || settings.provider === 'gemini';
+  const providerName = (p) => ({ openai: 'OpenAI', gemini: 'Google Gemini' }[p] || 'Groq');
+  /** Koniec poprzedniego fragmentu z oznaczeniami osób – Gemini zachowuje dzięki temu te same litery. */
+  const speakerContext = (c) => {
+    if (!c) return '';
+    const segs = (c.segs || []).filter((s) => s.t);
+    const t = segs.some((s) => s.p) ? segs.map((s) => (s.p ? s.p + ': ' : '') + s.t).join('\n') : c.text || '';
+    return t.slice(-500);
+  };
 
   function applyTheme() {
     if (settings.theme === 'system') document.documentElement.removeAttribute('data-theme');
@@ -87,7 +98,7 @@
   }
 
   // Konfiguracja serwera (czy wymaga hasła, czy ma własny klucz)
-  let serverConfig = { passwordRequired: false, serverKeys: { groq: false, openai: false }, loaded: false };
+  let serverConfig = { passwordRequired: false, serverKeys: { groq: false, openai: false, gemini: false }, loaded: false };
   async function loadServerConfig() {
     try {
       const r = await fetch('/api/config', { cache: 'no-store' });
@@ -227,6 +238,10 @@
             speakers: settings.speakers && diarizationAvailable() ? '1' : '0',
             prompt: buildPrompt(settings.glossary, prev ? prev.text : ''),
           });
+          if (settings.provider === 'gemini') {
+            q.set('context', speakerContext(prev));
+            q.set('glossary', String(settings.glossary || '').slice(0, 300));
+          }
           let res;
           try {
             res = await fetch('/api/transcribe?' + q, { method: 'POST', headers: { 'Content-Type': 'audio/wav', ...authHeaders() }, body: chunk.audio });
@@ -1439,16 +1454,17 @@
         ${installCard()}
         <div class="section">Transkrypcja</div>
         <div class="field"><label>Język transkrypcji</label>${sel('language', [['pl', 'Polski'], ['auto', 'Wykrywaj automatycznie'], ['en', 'Angielski'], ['de', 'Niemiecki'], ['uk', 'Ukraiński'], ['fr', 'Francuski'], ['es', 'Hiszpański']])}</div>
-        <div class="field"><label>Silnik transkrypcji</label>${sel('provider', [['groq', 'Groq – Whisper large-v3 (ma darmowy plan)'], ['openai', 'OpenAI – płatny, rozpoznaje rozmówców']], busy)}
+        <div class="field"><label>Silnik transkrypcji</label>${sel('provider', [['groq', 'Groq – Whisper large-v3 (ma darmowy plan)'], ['gemini', 'Google Gemini – darmowy, rozpoznaje rozmówców'], ['openai', 'OpenAI – płatny, rozpoznaje rozmówców']], busy)}
+          ${prov === 'gemini' ? '<small class="muted">Gemini zapisuje też wtrącenia i oznacza, kto mówi. Tekst pojawia się co 30–60 s. W darmowym planie Google może wykorzystywać przesłane nagrania do ulepszania swoich usług i ma dzienny limit zapytań.</small>' : ''}
           <small class="muted">Dźwięk jest wysyłany szyfrowanym połączeniem (HTTPS) przez serwer aplikacji do ${esc(providerHost())}. Serwer niczego nie zapisuje.</small></div>
         <div class="field"><label>Jakość rozpoznawania</label>${sel('quality', [['fast', 'Szybka – tekst pojawia się najszybciej'], ['balanced', 'Zrównoważona'], ['accurate', 'Dokładna – dłuższe fragmenty, tekst z opóźnieniem']], busy)}</div>
 
         <div class="section">Klucz API</div>
         ${serverKey ? '<p class="small muted">Serwer ma już skonfigurowany klucz – nie musisz nic wpisywać. Możesz podać własny, aby go zastąpić.</p>' : ''}
-        <div class="field"><label for="key">Klucz API ${prov === 'openai' ? 'OpenAI' : 'Groq'}</label>
-          <div style="display:flex;gap:8px"><input type="password" id="key" autocomplete="off" placeholder="${prov === 'openai' ? 'sk-…' : 'gsk_…'}" value="${esc(secret.get('key.' + prov))}">
+        <div class="field"><label for="key">Klucz API ${providerName(prov)}</label>
+          <div style="display:flex;gap:8px"><input type="password" id="key" autocomplete="off" placeholder="${{ openai: 'sk-…', gemini: 'AIza…' }[prov] || 'gsk_…'}" value="${esc(secret.get('key.' + prov))}">
           <button class="btn outline" id="showkey" style="min-height:50px">Pokaż</button></div>
-          <small class="muted">${prov === 'openai' ? 'Klucz utworzysz na platform.openai.com → API keys.' : 'Darmowy klucz: console.groq.com → API Keys → Create API Key.'} Klucz jest zapisany tylko w tym telefonie.</small></div>
+          <small class="muted">${{ openai: 'Klucz utworzysz na platform.openai.com → API keys.', gemini: 'Darmowy klucz: aistudio.google.com → Get API key → Create API key (wystarczy konto Google).' }[prov] || 'Darmowy klucz: console.groq.com → API Keys → Create API Key.'} Klucz jest zapisany tylko w tym telefonie.</small></div>
         <button class="btn" id="savekey">Zapisz i sprawdź klucz</button>
         ${serverConfig.passwordRequired ? `<div class="field"><label for="pw">Hasło dostępu do serwera</label><input type="password" id="pw" autocomplete="current-password" value="${esc(secret.get('password'))}"><small class="muted">Ustawione przez właściciela aplikacji, chroni jego klucz API.</small></div><button class="btn tonal" id="savepw">Zapisz hasło</button>` : ''}
 
@@ -1461,7 +1477,7 @@
         <div class="card" style="padding:4px 16px">
           ${tog('autosave', 'Automatyczne zapisywanie', 'Każda transkrypcja trafia do historii bez pytania')}
           ${tog('timestamps', 'Znaczniki czasu', 'Np. [12:05] przed każdym fragmentem')}
-          ${tog('speakers', 'Rozpoznawanie rozmówców', diarizationAvailable() ? 'Etykiety „Rozmówca A/B” są nadawane osobno w każdym fragmencie nagrania' : 'Dostępne tylko z silnikiem OpenAI', !diarizationAvailable() || busy, settings.speakers && diarizationAvailable())}
+          ${tog('speakers', 'Rozpoznawanie rozmówców', diarizationAvailable() ? (prov === 'gemini' ? 'Etykiety „Rozmówca A/B”; Gemini stara się zachować te same litery w kolejnych fragmentach' : 'Etykiety „Rozmówca A/B” są nadawane osobno w każdym fragmencie nagrania') : 'Dostępne z silnikiem Google Gemini (darmowy) lub OpenAI', !diarizationAvailable() || busy, settings.speakers && diarizationAvailable())}
         </div>
 
         <div class="section">Dokument PDF</div>
@@ -1480,7 +1496,7 @@
         <div class="section">Aplikacja na Androida</div>
         <p class="small muted">Wolisz klasyczną aplikację? Pobierz plik APK (wymaga zgody na instalację z nieznanych źródeł).</p>
         <a class="btn outline" href="/apk">${icon('download')}Pobierz APK na Androida</a>
-        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.2</p>
+        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.3</p>
       </main>${nav('settings')}`;
     }
     draw();

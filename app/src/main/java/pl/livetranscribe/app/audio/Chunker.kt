@@ -187,7 +187,8 @@ class Chunker(
     }
 
     companion object {
-        const val MIN_SPEECH_RMS = 45f
+        /** Próg mowy: dość nisko, żeby łapać też ciche wtrącenia osób dalej od telefonu. */
+        const val MIN_SPEECH_RMS = 30f
         const val PRE_ROLL_FRAMES = 15      // 300 ms przed początkiem mowy
         const val KEEP_TRAILING_FRAMES = 10 // 200 ms ciszy na końcu
         const val MIN_SPEECH_FRAMES = 8     // 160 ms

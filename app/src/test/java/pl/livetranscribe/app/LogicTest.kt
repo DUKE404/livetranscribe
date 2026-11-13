@@ -7,6 +7,7 @@ import pl.livetranscribe.app.audio.Chunker
 import pl.livetranscribe.app.audio.FileSplitter
 import pl.livetranscribe.app.audio.PcmConverter
 import pl.livetranscribe.app.engine.ChunkText
+import pl.livetranscribe.app.engine.GeminiEngine
 import pl.livetranscribe.app.engine.Seg
 import pl.livetranscribe.app.engine.TextComposer
 import pl.livetranscribe.app.pdf.Paginator
@@ -254,7 +255,34 @@ class LogicTest {
         assertTrue(!h("Dziękuję za uwagę, to wszystko na dziś.", 0.0, 3.0, 0.01, -0.25))
         assertTrue(!h("Omówiliśmy budżet.", 0.0, 2.0, 0.7, -0.3))
         assertTrue(!h("Dzień dobry", 0.0, 1.0, 0.0, 0.0))          // modele bez tych pól (OpenAI)
+        // Czyjeś „Dzięki.” wtrącone w rozmowę (nie jedyna wypowiedź we fragmencie) zostaje
+        assertTrue(!TextComposer.isHallucination("Dzięki.", 4.0, 5.0, 0.3, -0.6, 1.0, alone = false))
+        assertTrue(TextComposer.isHallucination("Dzięki.", 0.0, 9.0, 0.3, -0.6, 1.0, alone = true))
         assertEquals("", TextComposer.clean("…"))
         assertEquals("Tak.", TextComposer.clean("Tak."))
+    }
+
+    @Test
+    fun geminiResponseWithSpeakersAndInterjection() {
+        val inner = """{"segments":[{"speaker":"A","text":"Proponuję przesunąć termin na piątek."},""" +
+            """{"speaker":"B","text":"Nie, piątek odpada."},{"speaker":"Rozmówca A","text":"To czwartek?"},{"speaker":"B","text":" "}]}"""
+        val api = org.json.JSONObject().put(
+            "choices",
+            org.json.JSONArray().put(org.json.JSONObject().put("message", org.json.JSONObject().put("role", "assistant").put("content", inner))),
+        ).toString()
+        val segs = GeminiEngine.parseResponse(api)
+        assertEquals(3, segs.size)
+        assertEquals(listOf("A", "B", "A"), segs.map { it.speaker })
+        assertEquals("Nie, piątek odpada.", segs[1].text)
+        // Wypowiedzi różnych osób w dokumencie: „Rozmówca A: …”, „Rozmówca B: …”
+        val doc = TextComposer.compose(listOf(ChunkText(0, segs.joinToString(" ") { it.text }, segs)), false, true)
+        assertTrue(doc, doc.contains("Rozmówca B: Nie, piątek odpada."))
+        // JSON w bloku kodu, pusta lista, śmieci
+        assertEquals(1, GeminiEngine.parseSegments("```json\n{\"segments\":[{\"speaker\":\"a\",\"text\":\"Tak.\"}]}\n```").size)
+        assertEquals(0, GeminiEngine.parseSegments("{\"segments\":[]}").size)
+        assertEquals(0, GeminiEngine.parseSegments("nie wiem").size)
+        assertEquals("API key not valid", GeminiEngine.errorMessage("[{\"error\":{\"message\":\"API key not valid\"}}]"))
+        val prompt = GeminiEngine.instruction("pl", "A: Dzień dobry.\nB: Cześć.", "Kowalczyk")
+        assertTrue(prompt.contains("polski") && prompt.contains("B: Cześć.") && prompt.contains("Kowalczyk"))
     }
 }

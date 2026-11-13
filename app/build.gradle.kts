@@ -90,6 +90,8 @@ dependencies {
     implementation("com.alphacephei:vosk-android:0.3.47@aar")
 
     testImplementation("junit:junit:4.13.2")
+    // Prawdziwy org.json w testach jednostkowych (w android.jar są tylko atrapy)
+    testImplementation("org.json:json:20240303")
 
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

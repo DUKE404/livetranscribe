@@ -12,7 +12,7 @@ data class AppSettings(
     val language: String = "pl",
     /** "cloud" albo "local" */
     val engine: String = "cloud",
-    /** "groq", "openai" albo "custom" */
+    /** "groq", "gemini", "openai" albo "custom" */
     val provider: String = "groq",
     val customBaseUrl: String = "",
     /** Pusty = model dobierany automatycznie do jakości. */
@@ -37,11 +37,17 @@ data class AppSettings(
         get() = when (provider) {
             "openai" -> "https://api.openai.com/v1"
             "groq" -> "https://api.groq.com/openai/v1"
+            // Adres Google zgodny z OpenAI: sprawdzanie klucza i notatki AI. Transkrypcja – GeminiEngine.
+            "gemini" -> pl.livetranscribe.app.engine.GeminiEngine.OPENAI_URL
             else -> customBaseUrl.trim().trimEnd('/')
         }
 
-    /** Rozpoznawanie rozmówców obsługuje tylko model diaryzujący OpenAI. */
-    val diarizationAvailable: Boolean get() = engine == "cloud" && provider == "openai"
+    /** Rozpoznawanie rozmówców: Gemini (darmowe) albo model diaryzujący OpenAI. */
+    val diarizationAvailable: Boolean get() = engine == "cloud" && (provider == "openai" || provider == "gemini")
+
+    /** Modele Gemini do wypróbowania po kolei (własny model z Ustawień ma pierwszeństwo). */
+    val geminiModels: List<String>
+        get() = if (customModel.isNotBlank()) listOf(customModel.trim()) else pl.livetranscribe.app.engine.GeminiEngine.MODELS
 
     val model: String
         get() {
@@ -53,6 +59,7 @@ data class AppSettings(
                     else -> "gpt-4o-transcribe"
                 }
                 "groq" -> if (quality == "fast") "whisper-large-v3-turbo" else "whisper-large-v3"
+                "gemini" -> pl.livetranscribe.app.engine.GeminiEngine.MODELS.first()
                 else -> "whisper-1"
             }
         }
@@ -61,12 +68,19 @@ data class AppSettings(
     val summaryModel: String
         get() = when (provider) {
             "openai" -> "gpt-5-mini"
+            "gemini" -> pl.livetranscribe.app.engine.GeminiEngine.MODELS.first()
             else -> "openai/gpt-oss-120b"
         }
 
     /** Długość fragmentów: krótsze = tekst pojawia się szybciej, dłuższe = więcej kontekstu. */
-    val chunkMinMs: Int get() = when (quality) { "fast" -> 6_000; "accurate" -> 20_000; else -> 10_000 }
-    val chunkMaxMs: Int get() = when (quality) { "fast" -> 15_000; "accurate" -> 45_000; else -> 25_000 }
+    // Gemini dostaje dłuższe fragmenty: więcej kontekstu do rozpoznania osób i mniej zapytań (limit darmowego planu).
+    private val gemini: Boolean get() = engine == "cloud" && provider == "gemini"
+    val chunkMinMs: Int
+        get() = if (gemini) when (quality) { "fast" -> 15_000; "accurate" -> 45_000; else -> 30_000 }
+        else when (quality) { "fast" -> 6_000; "accurate" -> 20_000; else -> 10_000 }
+    val chunkMaxMs: Int
+        get() = if (gemini) when (quality) { "fast" -> 30_000; "accurate" -> 90_000; else -> 60_000 }
+        else when (quality) { "fast" -> 15_000; "accurate" -> 45_000; else -> 25_000 }
 
     val host: String get() = baseUrl.removePrefix("https://").removePrefix("http://").substringBefore('/')
 }

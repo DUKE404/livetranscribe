@@ -67,9 +67,11 @@ async function chat({ url, key, model }, system, user, json, maxTokens) {
     const body = {
       model,
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-      max_completion_tokens: maxTokens,
       reasoning_effort: 'low',
     };
+    // Adres Google (Gemini) zna klasyczne max_tokens; Groq i OpenAI – max_completion_tokens.
+    if (/generativelanguage\.googleapis\.com/.test(url)) body.max_tokens = maxTokens;
+    else body.max_completion_tokens = maxTokens;
     if (useJson) body.response_format = { type: 'json_object' };
     let r;
     try {
