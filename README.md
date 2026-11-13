@@ -47,6 +47,6 @@ Lokalnie: `./gradlew testDebugUnitTest assembleRelease` (JDK 17, Android SDK 35)
 
 ### Podpisywanie
 
-Jeśli w repozytorium ustawione są sekrety `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`,
-wydanie jest podpisywane tym kluczem. Bez nich używany jest klucz debug z maszyny budującej – APK da się
-zainstalować, ale kolejne wersje nie zaktualizują poprzedniej (trzeba ją najpierw odinstalować).
+Stały klucz podpisu jest w repozytorium (`signing/release.jks`) i jest zaszyfrowany hasłem, które zna tylko
+GitHub: sekret `KEYSTORE_PASSWORD` (Settings → Secrets and variables → Actions). Z nim każda nowa wersja APK
+instaluje się na poprzedniej bez utraty danych. Bez sekretu budowa i testy działają, ale wydanie jest pomijane.
