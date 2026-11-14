@@ -4,6 +4,11 @@ Aplikacja na Androida (10+), która zamienia mowę na tekst na żywo – także 
 
 **Pobieranie:** gotowy plik `LiveTranscribe.apk` jest w zakładce [Releases](../../releases/latest).
 **Instrukcja dla użytkownika:** [INSTRUKCJA.md](INSTRUKCJA.md).
+**Wersja webowa** stosuje wytyczne [Modern Web Guidance](https://github.com/GoogleChrome/modern-web-guidance-src): natywne `<dialog>`, popover
+i `<progress>`, przełączniki z rolą `switch` i etykietami, jeden region ogłoszeń dla czytnika ekranu, tytuły i fokus przy
+zmianie widoku, tekst skalowany z ustawieniami systemu (`rem`, `<meta name="text-scale">`), `color-scheme` i `accent-color`,
+ograniczony ruch i tryb wysokiego kontrastu, `scheduler.yield()` w długich pętlach, nagłówek CSP oraz `share_target`
+(„Udostępnij → LiveTranscribe” na Androidzie – plik odbiera service worker i zostaje w telefonie).
 **iPhone / iPad:** wersja webowa (`web/`, PWA instalowana z Safari) – z poprawkami pod iOS: mikrofon przez natywną
 częstotliwość i własne przepróbkowanie, domyślnie niewygaszany ekran, zapis plików przez arkusz udostępniania,
 ostrzeżenie o przerwach w nagraniu, wczytywanie nagrań z Dyktafonu (do 2 h).

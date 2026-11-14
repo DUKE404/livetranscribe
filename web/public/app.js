@@ -29,6 +29,8 @@
   const $ = (sel, el = document) => el.querySelector(sel);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** Oddaje sterowanie przeglądarce w długiej pętli (dotknięcia nie czekają), zapas: setTimeout. */
+  const yieldToMain = () => (globalThis.scheduler && typeof scheduler.yield === 'function' ? scheduler.yield() : sleep(0));
   const fmtDur = (ms) => formatTime(ms || 0);
   const fmtDate = (ts) => new Intl.DateTimeFormat('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(ts));
   const fmtBytes = (b) => (b >= 1e9 ? (b / 1073741824).toFixed(1).replace('.', ',') + ' GB' : Math.round(b / 1048576) + ' MB');
@@ -44,13 +46,37 @@
   const emit = (type, detail) => bus.dispatchEvent(new CustomEvent(type, { detail }));
 
   let toastTimer = 0;
+  let dlgSeq = 0;
+  /** Ogłoszenie dla czytnika ekranu: ariaNotify(), a bez niego – wspólny region role="status". */
+  function announce(msg) {
+    if (typeof document.ariaNotify === 'function') {
+      try { document.ariaNotify(msg); return; } catch (_) { /* region poniżej */ }
+    }
+    const a = document.getElementById('announcer');
+    if (!a) return;
+    a.textContent = '';
+    setTimeout(() => { a.textContent = msg; }, 60);
+  }
+  const popoverOk = (el) => typeof el.showPopover === 'function';
+  function hideToast() {
+    const t = $('#toast');
+    clearTimeout(toastTimer);
+    t.classList.remove('show');
+    if (popoverOk(t)) { try { t.hidePopover(); } catch (_) { /* już ukryty */ } }
+  }
+  /** Krótki komunikat (popover="manual" w warstwie top). Dotknięcie zamyka. Nie pod otwartym oknem modalnym. */
   function toast(msg, ms = 3200) {
+    const openDialog = document.querySelector('dialog[open]');
+    if (openDialog) { openDialog.addEventListener('close', () => toast(msg, ms), { once: true }); return; }
     const t = $('#toast');
     t.textContent = msg;
     t.classList.add('show');
+    if (popoverOk(t)) { try { t.showPopover(); } catch (_) { /* już widoczny */ } }
+    announce(msg);
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+    toastTimer = setTimeout(hideToast, ms);
   }
+  document.addEventListener('click', (e) => { if (e.target && e.target.id === 'toast') hideToast(); });
 
   // ======================================================================
   // Ustawienia (pamięć telefonu)
@@ -601,7 +627,10 @@
   /** Okno „proszę czekać” bez przycisków. Zwraca funkcję, która je zamyka. */
   function busyDlg(text) {
     const d = document.createElement('dialog');
-    d.innerHTML = `<div class="body"><div class="pending" style="margin:0"><span class="spin"></span>${esc(text)}</div></div>`;
+    const id = 'busy-' + (++dlgSeq);
+    d.setAttribute('aria-labelledby', id);
+    d.setAttribute('closedby', 'none'); // zamyka je tylko aplikacja, po zakończeniu pracy
+    d.innerHTML = `<div class="body"><div class="pending" style="margin:0"><span class="spin" aria-hidden="true"></span><span id="${id}">${esc(text)}</span></div></div>`;
     d.addEventListener('cancel', (e) => e.preventDefault());
     document.body.appendChild(d);
     d.showModal();
@@ -683,6 +712,7 @@
       const block = sr * 5;
       const mono = new Float32Array(block);
       let idx = 0;
+      let deadline = performance.now() + 50; // budżet długiego zadania: 50 ms
       const save = async (c) => {
         if (!(await db.session(id))) throw new SessionGone();
         await db.addChunk({
@@ -703,7 +733,7 @@
         importJobs.set(id, { progress: (off + n) / audio.length });
         const now = Date.now();
         if (now - lastEmit > 400) { lastEmit = now; emit('import', { sessionId: id }); }
-        if ((off / block) % 12 === 11) await sleep(0); // pozwól stronie odświeżyć widok
+        if (performance.now() >= deadline) { await yieldToMain(); deadline = performance.now() + 50; }
       }
       const last = splitter.flush();
       if (last) await save(last);
@@ -718,6 +748,32 @@
     await closeIfDone(id);
     emit('import', { sessionId: id });
     queue.kick();
+  }
+
+  /**
+   * Plik udostępniony z innej aplikacji (Udostępnij → LiveTranscribe): service worker odłożył go w pamięci
+   * podręcznej i otworzył #/?shared=1.
+   */
+  async function takeSharedFile() {
+    const q = route().q;
+    const flag = q.get('shared');
+    if (flag == null) return;
+    history.replaceState(null, '', '#/');
+    if (flag !== '1' || !('caches' in window)) {
+      toast('Nie udało się odebrać pliku. Wybierz go przyciskiem „WCZYTAJ NAGRANIE Z PLIKU”.', 7000);
+      return;
+    }
+    try {
+      const cache = await caches.open('lt-share');
+      const res = await cache.match('/shared-audio');
+      if (!res) return;
+      await cache.delete('/shared-audio');
+      const blob = await res.blob();
+      const name = decodeURIComponent(res.headers.get('X-File-Name') || 'nagranie');
+      await startImport(new File([blob], name, { type: blob.type }));
+    } catch (e) {
+      toast('Nie udało się odebrać pliku: ' + (e.message || 'błąd'), 7000);
+    }
   }
 
   /** Wybrany plik: przypomnienie o RODO, sprawdzenie klucza, potem wczytanie. */
@@ -886,7 +942,7 @@
   function noteCard(note, step) {
     const list = (title, items) => (items.length ? `<h4 style="margin:12px 0 4px">${title}</h4><ul style="margin:0;padding-left:20px">${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : '');
     let body;
-    if (step) body = `<div class="pending" style="margin:4px 0 0"><span class="spin"></span>${esc(step)}</div>`;
+    if (step) body = `<div class="pending" style="margin:4px 0 0"><span class="spin" aria-hidden="true"></span>${esc(step)}</div>`;
     else if (!note) {
       body = `<p class="small muted">Sztuczna inteligencja przygotuje podsumowanie, listę decyzji i zadań (kto, co, do kiedy). Notatka trafi też na początek PDF.</p>
         <button class="btn block" data-act="note" style="margin-top:10px">UTWÓRZ NOTATKĘ AI</button>`;
@@ -909,7 +965,18 @@
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; emit('install'); });
   window.addEventListener('appinstalled', () => { installEvent = null; toast('Aplikacja zainstalowana – znajdziesz ją na ekranie głównym.'); emit('install'); });
 
+  const supportsWebInstall = typeof Navigator !== 'undefined' && typeof Navigator.prototype.install === 'function';
   async function doInstall() {
+    // Wywołanie bezpośrednio w obsłudze dotknięcia – inaczej przeglądarka odrzuci prośbę o instalację.
+    if (supportsWebInstall) {
+      try {
+        await navigator.install();
+        emit('install');
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return; // użytkownik zrezygnował
+      }
+    }
     if (installEvent) {
       installEvent.prompt();
       try { await installEvent.userChoice; } catch (_) { /* */ }
@@ -929,25 +996,41 @@
   function installCard() {
     if (isStandalone()) return '';
     return `<div class="card install">
-      <div class="logo">${icon('download')}</div>
+      <div class="logo" aria-hidden="true">${icon('download')}</div>
       <div class="txt"><b>Zainstaluj na telefonie</b><div class="small muted">Ikona na ekranie głównym, pełny ekran, działa też bez internetu.</div></div>
-      <button class="btn tonal" data-act="install">Zainstaluj</button>
+      <button type="button" class="btn tonal" data-act="install" aria-label="Zainstaluj aplikację">Zainstaluj</button>
     </div>`;
   }
 
   // ======================================================================
   // Okna dialogowe
   // ======================================================================
-  function dialog({ title, body = '', buttons = [], onOpen, className = '' }) {
+  /**
+   * Okno modalne na natywnym <dialog>: nazwa z nagłówka (aria-labelledby), fokus na bezpiecznej albo głównej
+   * akcji (autofocus), zamykanie Esc, gestem „wstecz” i dotknięciem poza oknem (closedby="any").
+   */
+  function dialog({ title, body = '', buttons = [], onOpen, className = '', label = '' }) {
     return new Promise((resolve) => {
       const d = document.createElement('dialog');
+      const tid = 'dlg-' + (++dlgSeq);
       if (className) d.className = className;
-      d.innerHTML = (title ? `<h3>${esc(title)}</h3>` : '') + `<div class="body">${body}</div>` +
-        (buttons.length ? `<div class="foot">${buttons.map((b, i) => `<button class="btn ${b.cls || 'text'}" data-i="${i}" ${b.disabled ? 'disabled' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '');
+      if (title) d.setAttribute('aria-labelledby', tid);
+      else if (label) d.setAttribute('aria-label', label);
+      d.setAttribute('closedby', 'any');
+      // Przy akcji nieodwracalnej fokus na bezpiecznej (Anuluj), w pozostałych – na głównej (ostatniej).
+      const danger = buttons.some((b) => /danger/.test(b.cls || ''));
+      const focusIdx = danger ? buttons.findIndex((b) => !/danger/.test(b.cls || '')) : buttons.length - 1;
+      d.innerHTML = (title ? `<h3 id="${tid}">${esc(title)}</h3>` : '') + `<div class="body">${body}</div>` +
+        (buttons.length ? `<div class="foot">${buttons.map((b, i) => `<button type="button" class="btn ${b.cls || 'text'}" data-i="${i}" ${b.disabled ? 'disabled' : ''} ${i === focusIdx ? 'autofocus' : ''}>${esc(b.label)}</button>`).join('')}</div>` : '');
       document.body.appendChild(d);
       let value = null;
       d.addEventListener('click', (e) => {
-        if (e.target === d) { d.close(); return; }
+        // Bez closedby: zamknięcie dotknięciem tła. Liczy się pozycja wskaźnika, nie e.target –
+        // dotknięcie marginesu wewnątrz okna też ma target === dialog i nie może go zamykać.
+        if (e.target === d && !('closedBy' in HTMLDialogElement.prototype)) {
+          const r = d.getBoundingClientRect();
+          if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) { d.close(); return; }
+        }
         const b = e.target.closest('[data-i]');
         if (b && b.closest('.foot')) {
           const def = buttons[Number(b.dataset.i)];
@@ -978,6 +1061,7 @@
   function menuDlg(items) {
     return dialog({
       className: 'menu',
+      label: 'Więcej opcji',
       body: items.map((it, i) => `<button data-m="${i}" class="${it.danger ? 'danger' : ''}" ${it.disabled ? 'disabled' : ''}>${esc(it.label)}</button>`).join(''),
       onOpen: (d, done) => d.addEventListener('click', (e) => { const b = e.target.closest('[data-m]'); if (b) done(items[Number(b.dataset.m)].value); }),
     });
@@ -999,27 +1083,39 @@
   const go = (hash) => { if (location.hash === hash) render(); else location.hash = hash; };
 
   function nav(cur) {
-    const it = (r, ic, l) => `<a href="#/${r === 'home' ? '' : r}" class="${cur === r ? 'on' : ''}">${icon(ic)}<span>${l}</span></a>`;
-    return `<nav class="bottom"><div class="inner">${it('home', 'home', 'Start')}${it('history', 'list', 'Historia')}${it('settings', 'gear', 'Ustawienia')}</div></nav>`;
+    const it = (r, ic, l) => `<li><a href="#/${r === 'home' ? '' : r}" ${cur === r ? 'aria-current="page"' : ''}>${icon(ic)}<span>${l}</span></a></li>`;
+    // role="list": Safari zdejmuje semantykę listy z <ul> ułożonej przez flex
+    return `<nav class="bottom" aria-label="Główna"><ul class="inner" role="list">${it('home', 'home', 'Start')}${it('history', 'list', 'Historia')}${it('settings', 'gear', 'Ustawienia')}</ul></nav>`;
   }
 
   function sessionRow(s, withMenu) {
+    // Tytuł to link (dostępny z klawiatury i czytnika ekranu); cały wiersz nadal reaguje na dotknięcie.
     return `<div class="session" data-open="${s.id}">
-      <div class="main"><div class="title">${esc(s.title)}</div>
-        <div class="meta"><span>${fmtDate(s.createdAt)} · ${fmtDur(s.durationMs)}</span><span class="chip ${s.status === 'DONE' ? 'done' : ''}">${statusLabel(s.status)}</span></div>
-      </div>
-      ${withMenu ? `<button class="iconbtn" data-menu="${s.id}" aria-label="Więcej">${icon('more')}</button>` : ''}
+      <a class="main open" href="#/doc/${s.id}"><span class="title">${esc(s.title)}</span>
+        <span class="meta"><span>${fmtDate(s.createdAt)} · ${fmtDur(s.durationMs)}</span><span class="chip ${s.status === 'DONE' ? 'done' : ''}">${statusLabel(s.status)}</span></span>
+      </a>
+      ${withMenu ? `<button type="button" class="iconbtn" data-menu="${s.id}" aria-label="Więcej: ${esc(s.title)}">${icon('more')}</button>` : ''}
     </div>`;
   }
 
-  function render() {
+  const TITLES = { home: 'LiveTranscribe – transkrypcja mowy', rec: 'Transkrypcja na żywo – LiveTranscribe', history: 'Historia – LiveTranscribe', settings: 'Ustawienia – LiveTranscribe', doc: 'Dokument – LiveTranscribe' };
+  let firstRender = true;
+  async function render() {
     cleanup.forEach((f) => f());
     cleanup = [];
     app.onclick = null; app.onchange = null; app.oninput = null;
     const r = route();
-    const view = { home: viewHome, rec: viewRec, doc: viewDoc, history: viewHistory, settings: viewSettings }[r.name] || viewHome;
-    view(r);
+    const name = { home: 1, rec: 1, doc: 1, history: 1, settings: 1 }[r.name] ? r.name : 'home';
+    document.title = TITLES[name];
+    const view = { home: viewHome, rec: viewRec, doc: viewDoc, history: viewHistory, settings: viewSettings }[name];
+    await view(r);
     window.scrollTo(0, 0);
+    // Po przejściu do innego widoku fokus na jego nagłówku – czytnik ekranu ogłasza nową stronę.
+    if (!firstRender) {
+      const h = app.querySelector('h1');
+      if (h && !app.contains(document.activeElement)) { h.tabIndex = -1; h.focus({ preventScroll: true }); }
+    }
+    firstRender = false;
   }
   window.addEventListener('hashchange', render);
 
@@ -1031,7 +1127,7 @@
       try { const e = await navigator.storage.estimate(); free = fmtBytes(Math.max(0, (e.quota || 0) - (e.usage || 0))); } catch (_) { free = '—'; }
       const active = rec.status !== 'idle';
       app.innerHTML = `
-        <header class="top"><div class="brand"><div class="logo">${icon('mic')}</div>LiveTranscribe</div>
+        <header class="top"><h1 class="brand"><span class="logo" aria-hidden="true">${icon('mic')}</span>LiveTranscribe</h1>
           <a class="iconbtn" href="#/settings" aria-label="Ustawienia" style="color:inherit">${icon('gear')}</a></header>
         <main class="with-nav">
           <h2>Zamień mowę na tekst</h2>
@@ -1053,6 +1149,7 @@
     };
     await draw();
     app.onclick = async (e) => {
+      if (e.target.closest('a[href]')) return; // link do dokumentu nawiguje sam
       const t = e.target.closest('[data-act],[data-open]');
       if (!t) return;
       if (t.dataset.act === 'start') go(rec.status !== 'idle' ? '#/rec' : '#/rec?auto=1');
@@ -1077,10 +1174,10 @@
     app.innerHTML = `
       <header class="top"><a class="iconbtn" href="#/" aria-label="Wróć" style="color:inherit">${icon('back')}</a><h1>Transkrypcja</h1></header>
       <main class="rec">
-        <div class="status"><span class="dot" id="dot"></span><span id="stat"></span></div>
+        <p class="status" role="status"><span class="dot" id="dot" aria-hidden="true"></span><span id="stat"></span></p>
         <p class="small muted" style="text-align:center;margin-top:-6px" id="mode"></p>
         <div class="timer" id="timer">00:00</div>
-        <canvas class="level" id="lvl"></canvas>
+        <canvas class="level" id="lvl" aria-hidden="true"></canvas>
         <div id="banners" style="display:flex;flex-direction:column;gap:8px"></div>
         <div class="livetext" id="live"></div>
         <div id="after"></div>
@@ -1090,8 +1187,8 @@
           <button class="btn tonal" id="resume">${icon('play')}WZNÓW</button>
           <button class="btn" id="end">ZAKOŃCZ</button>
         </div>
-        <div class="set"><div class="lbl"><b>Nie wygaszaj ekranu</b><small>${IS_IOS ? 'Na iPhonie konieczne: przy zablokowanym ekranie lub w innej aplikacji iOS wyłącza mikrofon stronom internetowym.' : 'Najpewniejsze przy długich spotkaniach. Wyłączone – nagrywanie zwykle trwa też przy zablokowanym telefonie.'}</small></div>
-          <label class="switch"><input type="checkbox" id="awake" ${settings.keepAwake ? 'checked' : ''}><span></span></label></div>
+        <label class="set" for="awake"><span class="lbl"><b id="awake-l">Nie wygaszaj ekranu</b><small id="awake-d">${IS_IOS ? 'Na iPhonie konieczne: przy zablokowanym ekranie lub w innej aplikacji iOS wyłącza mikrofon stronom internetowym.' : 'Najpewniejsze przy długich spotkaniach. Wyłączone – nagrywanie zwykle trwa też przy zablokowanym telefonie.'}</small></span>
+          <span class="switch"><input type="checkbox" switch role="switch" id="awake" aria-labelledby="awake-l" aria-describedby="awake-d" ${settings.keepAwake ? 'checked' : ''}><span></span></span></label>
       </main>`;
 
     const els = { dot: $('#dot'), stat: $('#stat'), mode: $('#mode'), timer: $('#timer'), live: $('#live'), banners: $('#banners'), after: $('#after'), big: $('#big'), biglbl: $('#biglbl'), pause: $('#pause'), resume: $('#resume'), end: $('#end') };
@@ -1108,7 +1205,7 @@
       const atBottom = els.live.scrollHeight - els.live.scrollTop - els.live.clientHeight < 40;
       const placeholder = rec.status === 'idle' && !sid ? 'Tu pojawi się tekst transkrypcji.' : 'Słucham… Tekst pojawi się po pierwszych zdaniach.';
       els.live.innerHTML = (text ? esc(text) : `<span class="muted">${placeholder}</span>`) +
-        (pending ? `<div class="pending"><span class="spin"></span>${pending === 1 ? 'Przetwarzam fragment…' : 'W kolejce: ' + pending + ' fragmenty'}</div>` : '');
+        (pending ? `<div class="pending"><span class="spin" aria-hidden="true"></span>${pending === 1 ? 'Przetwarzam fragment…' : 'W kolejce: ' + pending + ' fragmenty'}</div>` : '');
       if (atBottom || rec.status === 'recording') els.live.scrollTop = els.live.scrollHeight;
     }
 
@@ -1166,9 +1263,11 @@
         if (g.roundRect) g.roundRect(x, y, bw, bh, bw / 2); else g.rect(x, y, bw, bh);
         g.fill();
       }
-      raf = requestAnimationFrame(drawLevel);
+      // Klatki tylko podczas nagrywania – poza nim wystarczy jeden statyczny obraz (oszczędza baterię).
+      raf = rec.status === 'recording' ? requestAnimationFrame(drawLevel) : 0;
     }
     raf = requestAnimationFrame(drawLevel);
+    on('rec', () => { if (!raf) raf = requestAnimationFrame(drawLevel); });
     cleanup.push(() => cancelAnimationFrame(raf));
 
     async function tryStart() {
@@ -1249,7 +1348,8 @@
 
     async function draw() {
       const s = await db.session(id);
-      if (!s) { app.innerHTML = `<header class="top"><a class="iconbtn" href="#/history" style="color:inherit">${icon('back')}</a><h1>Dokument</h1></header><main><p class="empty">Ten dokument nie istnieje.</p></main>`; return; }
+      if (!s) { app.innerHTML = `<header class="top"><a class="iconbtn" href="#/history" aria-label="Wróć do historii" style="color:inherit">${icon('back')}</a><h1>Dokument</h1></header><main><p class="empty">Ten dokument nie istnieje.</p></main>`; return; }
+      document.title = s.title + ' – LiveTranscribe';
       const chunks = await db.chunks(id);
       const live = rec.sessionId === id;
       const importing = s.status === 'IMPORTING';
@@ -1279,15 +1379,15 @@
             <span>${fmtDate(s.createdAt)} · ${fmtDur(s.durationMs)}</span><span class="chip ${s.status === 'DONE' ? 'done' : ''}">${statusLabel(s.status)}</span></div></div></div>
           ${live ? '<div class="banner"><span>Ten dokument jest właśnie nagrywany. Edycja i PDF będą dostępne po zakończeniu.</span></div>' : ''}
           ${importing ? `<div class="banner"><span>Wczytuję plik nagrania${job ? ' – ' + Math.floor(job.progress * 100) + '%' : '…'}. Nie zamykaj tej strony do końca wczytywania – tekst pojawia się na bieżąco.</span></div>
-            <div class="progress det"><i style="width:${job ? Math.floor(job.progress * 100) : 0}%"></i></div>` : ''}
+            <progress class="bar" max="100" value="${job ? Math.floor(job.progress * 100) : 0}" aria-label="Wczytywanie pliku nagrania"></progress>` : ''}
           ${s.importError ? `<div class="banner error"><span>${esc(s.importError)}</span><button class="btn text" data-act="importok">OK</button></div>` : ''}
-          ${pending && !live && (!importing || queue.problem) ? `<div class="banner ${queue.problem ? 'error' : ''}"><span>${queue.problem ? esc(queue.problem) + ' (w kolejce: ' + pending + ')' : 'Kończę transkrypcję – pozostało fragmentów: ' + pending}</span>${queue.problem ? '<button class="btn text" data-act="retry">Ponów</button>' : ''}</div>${queue.problem ? '' : '<div class="progress"><i></i></div>'}` : ''}
+          ${pending && !live && (!importing || queue.problem) ? `<div class="banner ${queue.problem ? 'error' : ''}"><span>${queue.problem ? esc(queue.problem) + ' (w kolejce: ' + pending + ')' : 'Kończę transkrypcję – pozostało fragmentów: ' + pending}</span>${queue.problem ? '<button class="btn text" data-act="retry">Ponów</button>' : ''}</div>${queue.problem ? '' : '<progress class="bar" aria-label="Postęp transkrypcji"></progress>'}` : ''}
           ${failed ? `<div class="banner error"><span>Nie udało się przetworzyć fragmentów: ${failed}</span><button class="btn text" data-act="retryfailed">Ponów</button></div>` : ''}
           ${!live && !importing && (s.note || noteJobs.has(id) || (s.status === 'DONE' && text.trim())) ? noteCard(s.note, noteJobs.get(id)) : ''}
           <div class="doctext">${text.trim() ? esc(text) : `<span class="muted">${pending || s.status !== 'DONE' ? 'Tekst pojawi się po przetworzeniu nagrania.' : 'Ten dokument nie zawiera tekstu (w nagraniu nie wykryto mowy).'}</span>`}</div>
         </main>
         <div class="actions"><div class="inner">
-          ${!pdf ? `<button class="btn block" data-act="gen" ${live || importing || generating ? 'disabled' : ''}>${generating ? '<span class="spin"></span>Tworzę PDF…' : 'GENERUJ PDF'}</button>`
+          ${!pdf ? `<button class="btn block" data-act="gen" ${live || importing || generating ? 'disabled' : ''}>${generating ? '<span class="spin" aria-hidden="true"></span>Tworzę PDF…' : 'GENERUJ PDF'}</button>`
             : `<p class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">PDF gotowy: ${esc(pdf.name)}</p>
                <button class="btn block" data-act="download">${icon('download')}POBIERZ PDF</button>
                <div class="row"><button class="btn tonal" data-act="share">UDOSTĘPNIJ PDF</button><button class="btn tonal" data-act="open">OTWÓRZ PDF</button></div>
@@ -1304,9 +1404,9 @@
       const res = await dialog({
         title: 'Generuj PDF',
         body: (edited ? '<p>Dokument zostanie utworzony z tekstu po Twoich poprawkach.</p>'
-          : `<div class="set"><div class="lbl"><b>Znaczniki czasu</b></div><label class="switch"><input type="checkbox" id="o-ts" ${settings.timestamps ? 'checked' : ''}><span></span></label></div>
-             <div class="set"><div class="lbl"><b>Rozmówcy</b>${hasSpk ? '' : '<small>Brak danych o rozmówcach w tym nagraniu</small>'}</div><label class="switch"><input type="checkbox" id="o-sp" ${hasSpk && settings.speakers ? 'checked' : ''} ${hasSpk ? '' : 'disabled'}><span></span></label></div>`) +
-          (s.note ? `<div class="set"><div class="lbl"><b>Notatka AI na początku</b></div><label class="switch"><input type="checkbox" id="o-note" checked><span></span></label></div>` : '') +
+          : `<label class="set" for="o-ts"><span class="lbl"><b>Znaczniki czasu</b></span><span class="switch"><input type="checkbox" switch role="switch" id="o-ts" ${settings.timestamps ? 'checked' : ''}><span></span></span></label>
+             <label class="set" for="o-sp"><span class="lbl"><b id="o-sp-l">Rozmówcy</b>${hasSpk ? '' : '<small id="o-sp-d">Brak danych o rozmówcach w tym nagraniu</small>'}</span><span class="switch"><input type="checkbox" switch role="switch" id="o-sp" aria-labelledby="o-sp-l" ${hasSpk ? '' : 'aria-describedby="o-sp-d"'} ${hasSpk && settings.speakers ? 'checked' : ''} ${hasSpk ? '' : 'disabled'}><span></span></span></label>`) +
+          (s.note ? `<label class="set" for="o-note"><span class="lbl"><b>Notatka AI na początku</b></span><span class="switch"><input type="checkbox" switch role="switch" id="o-note" checked><span></span></span></label>` : '') +
           (pending ? `<p class="small" style="color:var(--danger)">Uwaga: ${pending} fragmentów czeka jeszcze na transkrypcję i nie trafi do tego PDF.</p>` : ''),
         buttons: [{ label: 'Anuluj', value: null }, {
           label: 'Generuj',
@@ -1432,6 +1532,7 @@
         if (v === 'delete' && await confirmDlg('Usunąć dokument?', `„${s.title}” zostanie trwale usunięty z aplikacji.`, 'Usuń', true)) await db.deleteSession(id);
         return;
       }
+      if (e.target.closest('a[href]')) return; // link do dokumentu nawiguje sam
       const o = e.target.closest('[data-open]');
       if (o) go('#/doc/' + o.dataset.open);
     };
@@ -1441,9 +1542,10 @@
 
   // ---------- Ustawienia ----------
   async function viewSettings() {
-    const sel = (k, opts, disabled) => `<select data-set="${k}" ${disabled ? 'disabled' : ''}>${opts.map(([v, l]) => `<option value="${v}" ${settings[k] === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
-    const tog = (k, title, sub, disabled, checked = settings[k]) => `<div class="set"><div class="lbl"><b>${esc(title)}</b>${sub ? `<small>${esc(sub)}</small>` : ''}</div>
-      <label class="switch"><input type="checkbox" data-tog="${k}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span></span></label></div>`;
+    const sel = (k, opts, disabled, hint) => `<select id="s-${k}" data-set="${k}" ${disabled ? 'disabled' : ''} ${hint ? `aria-describedby="${hint}"` : ''}>${opts.map(([v, l]) => `<option value="${v}" ${settings[k] === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    // Przełącznik: cały wiersz jest etykietą (większy cel dotyku), opis podpięty przez aria-describedby
+    const tog = (k, title, sub, disabled, checked = settings[k]) => `<label class="set" for="t-${k}"><span class="lbl"><b id="t-${k}-l">${esc(title)}</b>${sub ? `<small id="t-${k}-d">${esc(sub)}</small>` : ''}</span>
+      <span class="switch"><input type="checkbox" switch role="switch" id="t-${k}" data-tog="${k}" aria-labelledby="t-${k}-l" ${sub ? `aria-describedby="t-${k}-d"` : ''} ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span></span></span></label>`;
 
     function draw() {
       const busy = rec.status !== 'idle';
@@ -1453,25 +1555,25 @@
       <main class="with-nav">
         ${installCard()}
         <div class="section">Transkrypcja</div>
-        <div class="field"><label>Język transkrypcji</label>${sel('language', [['pl', 'Polski'], ['auto', 'Wykrywaj automatycznie'], ['en', 'Angielski'], ['de', 'Niemiecki'], ['uk', 'Ukraiński'], ['fr', 'Francuski'], ['es', 'Hiszpański']])}</div>
-        <div class="field"><label>Silnik transkrypcji</label>${sel('provider', [['groq', 'Groq – Whisper large-v3 (ma darmowy plan)'], ['gemini', 'Google Gemini – darmowy, rozpoznaje rozmówców'], ['openai', 'OpenAI – płatny, rozpoznaje rozmówców']], busy)}
-          ${prov === 'gemini' ? '<small class="muted">Gemini zapisuje też wtrącenia i oznacza, kto mówi. Tekst pojawia się co 30–60 s. Darmowy plan ma dzienny limit (obecnie ok. 500 fragmentów, czyli kilka godzin nagrań – sprawdzisz go na aistudio.google.com/rate-limit). Google może wykorzystywać przesłane w nim nagrania do ulepszania swoich usług.</small>' : ''}
-          <small class="muted">Dźwięk jest wysyłany szyfrowanym połączeniem (HTTPS) przez serwer aplikacji do ${esc(providerHost())}. Serwer niczego nie zapisuje.</small></div>
-        <div class="field"><label>Jakość rozpoznawania</label>${sel('quality', [['fast', 'Szybka – tekst pojawia się najszybciej'], ['balanced', 'Zrównoważona'], ['accurate', 'Dokładna – dłuższe fragmenty, tekst z opóźnieniem']], busy)}</div>
+        <div class="field"><label for="s-language">Język transkrypcji</label>${sel('language', [['pl', 'Polski'], ['auto', 'Wykrywaj automatycznie'], ['en', 'Angielski'], ['de', 'Niemiecki'], ['uk', 'Ukraiński'], ['fr', 'Francuski'], ['es', 'Hiszpański']])}</div>
+        <div class="field"><label for="s-provider">Silnik transkrypcji</label>${sel('provider', [['groq', 'Groq – Whisper large-v3 (ma darmowy plan)'], ['gemini', 'Google Gemini – darmowy, rozpoznaje rozmówców'], ['openai', 'OpenAI – płatny, rozpoznaje rozmówców']], busy, prov === 'gemini' ? 'h-provider-g h-provider' : 'h-provider')}
+          ${prov === 'gemini' ? '<small class="muted" id="h-provider-g">Gemini zapisuje też wtrącenia i oznacza, kto mówi. Tekst pojawia się co 30–60 s. Darmowy plan ma dzienny limit (obecnie ok. 500 fragmentów, czyli kilka godzin nagrań – sprawdzisz go na aistudio.google.com/rate-limit). Google może wykorzystywać przesłane w nim nagrania do ulepszania swoich usług.</small>' : ''}
+          <small class="muted" id="h-provider">Dźwięk jest wysyłany szyfrowanym połączeniem (HTTPS) przez serwer aplikacji do ${esc(providerHost())}. Serwer niczego nie zapisuje.</small></div>
+        <div class="field"><label for="s-quality">Jakość rozpoznawania</label>${sel('quality', [['fast', 'Szybka – tekst pojawia się najszybciej'], ['balanced', 'Zrównoważona'], ['accurate', 'Dokładna – dłuższe fragmenty, tekst z opóźnieniem']], busy)}</div>
 
         <div class="section">Klucz API</div>
         ${serverKey ? '<p class="small muted">Serwer ma już skonfigurowany klucz – nie musisz nic wpisywać. Możesz podać własny, aby go zastąpić.</p>' : ''}
         <div class="field"><label for="key">Klucz API ${providerName(prov)}</label>
-          <div style="display:flex;gap:8px"><input type="password" id="key" autocomplete="off" placeholder="${{ openai: 'sk-…', gemini: 'AIza…' }[prov] || 'gsk_…'}" value="${esc(secret.get('key.' + prov))}">
+          <div style="display:flex;gap:8px"><input type="password" id="key" autocomplete="off" aria-describedby="h-key" placeholder="${{ openai: 'sk-…', gemini: 'AIza…' }[prov] || 'gsk_…'}" value="${esc(secret.get('key.' + prov))}">
           <button class="btn outline" id="showkey" style="min-height:50px">Pokaż</button></div>
-          <small class="muted">${{ openai: 'Klucz utworzysz na platform.openai.com → API keys.', gemini: 'Darmowy klucz: aistudio.google.com → Get API key → Create API key (wystarczy konto Google).' }[prov] || 'Darmowy klucz: console.groq.com → API Keys → Create API Key.'} Klucz jest zapisany tylko w tym telefonie.</small></div>
+          <small class="muted" id="h-key">${{ openai: 'Klucz utworzysz na platform.openai.com → API keys.', gemini: 'Darmowy klucz: aistudio.google.com → Get API key → Create API key (wystarczy konto Google).' }[prov] || 'Darmowy klucz: console.groq.com → API Keys → Create API Key.'} Klucz jest zapisany tylko w tym telefonie.</small></div>
         <button class="btn" id="savekey">Zapisz i sprawdź klucz</button>
-        ${serverConfig.passwordRequired ? `<div class="field"><label for="pw">Hasło dostępu do serwera</label><input type="password" id="pw" autocomplete="current-password" value="${esc(secret.get('password'))}"><small class="muted">Ustawione przez właściciela aplikacji, chroni jego klucz API.</small></div><button class="btn tonal" id="savepw">Zapisz hasło</button>` : ''}
+        ${serverConfig.passwordRequired ? `<div class="field"><label for="pw">Hasło dostępu do serwera</label><input type="password" id="pw" autocomplete="current-password" aria-describedby="h-pw" value="${esc(secret.get('password'))}"><small class="muted" id="h-pw">Ustawione przez właściciela aplikacji, chroni jego klucz API.</small></div><button class="btn tonal" id="savepw">Zapisz hasło</button>` : ''}
 
         <div class="section">Słownik nazw</div>
         <div class="field"><label for="gloss">Nazwiska, firmy, produkty, skróty</label>
-          <textarea id="gloss" rows="3" style="width:100%;border-radius:12px;border:1.5px solid var(--line);background:var(--surface);padding:10px 12px" placeholder="np. Kowalczyk, Allegro, KPI, Jira">${esc(settings.glossary)}</textarea>
-          <small class="muted">Oddziel przecinkami. Model częściej zapisze te słowa poprawnie.</small></div>
+          <textarea id="gloss" rows="3" aria-describedby="h-gloss" style="width:100%;border-radius:12px;border:1.5px solid var(--line);background:var(--surface);padding:10px 12px" placeholder="np. Kowalczyk, Allegro, KPI, Jira">${esc(settings.glossary)}</textarea>
+          <small class="muted" id="h-gloss">Oddziel przecinkami. Model częściej zapisze te słowa poprawnie.</small></div>
 
         <div class="section">Tekst</div>
         <div class="card" style="padding:4px 16px">
@@ -1481,11 +1583,11 @@
         </div>
 
         <div class="section">Dokument PDF</div>
-        <div class="field"><label>Rozmiar czcionki</label>${sel('pdfFontSize', [['small', 'Mała'], ['medium', 'Średnia'], ['large', 'Duża']])}</div>
+        <div class="field"><label for="s-pdfFontSize">Rozmiar czcionki</label>${sel('pdfFontSize', [['small', 'Mała'], ['medium', 'Średnia'], ['large', 'Duża']])}</div>
         <div class="card" style="padding:4px 16px">${tog('pdfHeader', 'Nagłówek na każdej stronie', 'Tytuł dokumentu u góry kolejnych stron')}</div>
 
         <div class="section">Wygląd</div>
-        <div class="field"><label>Motyw</label>${sel('theme', [['system', 'Jak w systemie'], ['light', 'Jasny'], ['dark', 'Ciemny']])}</div>
+        <div class="field"><label for="s-theme">Motyw</label>${sel('theme', [['system', 'Jak w systemie'], ['light', 'Jasny'], ['dark', 'Ciemny']])}</div>
 
         <div class="section">Prywatność i dane</div>
         <div class="card" style="padding:4px 16px">${tog('keepAudio', 'Zachowuj nagrania audio', 'Wyłączone: dźwięk jest usuwany z telefonu zaraz po zamianie na tekst')}</div>
@@ -1496,7 +1598,7 @@
         <div class="section">Aplikacja na Androida</div>
         <p class="small muted">Wolisz klasyczną aplikację? Pobierz plik APK (wymaga zgody na instalację z nieznanych źródeł).</p>
         <a class="btn outline" href="/apk">${icon('download')}Pobierz APK na Androida</a>
-        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.3</p>
+        <p class="small muted" style="text-align:center;margin-top:12px">LiveTranscribe Web 1.4</p>
       </main>${nav('settings')}`;
     }
     draw();
@@ -1559,6 +1661,7 @@
     toast('Miłego dnia maluszku\u00a0❤️', 4000); // powitanie przy każdym otwarciu aplikacji
     await loadServerConfig();
     queue.kick();
+    takeSharedFile();
   })();
 
   // Dostęp do testów automatycznych

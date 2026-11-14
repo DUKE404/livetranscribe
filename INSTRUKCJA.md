@@ -9,7 +9,7 @@
 4. **ROZPOCZNIJ TRANSKRYPCJĘ** → przy pytaniu o mikrofon wybierz **Zezwól**.
 5. Po zakończeniu: **GENERUJ PDF** → **POBIERZ PDF** (folder Pobrane) lub **UDOSTĘPNIJ PDF** (WhatsApp, Gmail, Messenger…).
 
-Masz już gotowe nagranie (np. z dyktafonu)? Dotknij **WCZYTAJ NAGRANIE Z PLIKU** i wybierz plik (MP3, M4A, WAV, OGG, FLAC). Nie zamykaj strony, dopóki pasek wczytywania nie dojdzie do końca. W przeglądarce można wczytać plik do 400 MB; dłuższe nagrania wczytaj w aplikacji APK.
+Masz już gotowe nagranie (np. z dyktafonu)? Dotknij **WCZYTAJ NAGRANIE Z PLIKU** i wybierz plik (MP3, M4A, WAV, OGG, FLAC). Na Androidzie, gdy aplikacja jest zainstalowana z Chrome, możesz też w dyktafonie wybrać nagranie → **Udostępnij** → **LiveTranscribe**. Nie zamykaj strony, dopóki pasek wczytywania nie dojdzie do końca. W przeglądarce można wczytać plik do 400 MB; dłuższe nagrania wczytaj w aplikacji APK.
 
 Wersja z przeglądarki nie ma trybu lokalnego (offline). Przy kilkugodzinnych spotkaniach włącz **Nie wygaszaj ekranu** na ekranie transkrypcji i podłącz ładowarkę – najpewniejsza jest wtedy aplikacja APK opisana niżej.
 
