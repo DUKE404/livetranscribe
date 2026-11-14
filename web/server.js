@@ -57,6 +57,22 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Permissions-Policy', 'microphone=(self), camera=(), geolocation=()');
+  // Tylko własne skrypty i połączenia (dźwięk idzie przez /api), żadnych osadzeń w obcych stronach.
+  // style-src 'unsafe-inline': aplikacja używa atrybutów style w szablonach; skryptów inline nie ma.
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "connect-src 'self'",
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; '));
   if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000');
   }
@@ -107,6 +123,10 @@ app.get('/api/config', (req, res) => {
 });
 
 app.get('/apk', (req, res) => res.redirect(302, APK_URL));
+
+// Udostępnianie pliku do aplikacji obsługuje service worker (plik zostaje w telefonie). Gdy go jeszcze
+// nie ma, zapytanie trafia tutaj – serwer niczego nie zapisuje, tylko wraca do aplikacji z informacją.
+app.post('/share-target', (req, res) => res.redirect(303, '/#/?shared=0'));
 
 app.post('/api/check', requirePassword, rateLimit(20, 60000), express.json({ limit: '4kb' }), async (req, res) => {
   const p = PROVIDERS[req.query.provider] || PROVIDERS.groq;
